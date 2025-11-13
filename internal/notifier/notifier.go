@@ -9,13 +9,13 @@ const (
 	EmailNotifier NotifierType = "email"
 )
 
-type Message struct {
+type Message[T any] struct {
 	ID       string
 	Type     NotifierType
-	Data     map[string]any
-	Metadata map[string]any
+	Data     T
+	Metadata map[string]string
 }
 
-type Notifier interface {
-	Send(ctx context.Context, msg *Message) error
+type Notifier[T any] interface {
+	Send(ctx context.Context, msg *Message[T]) error
 }
