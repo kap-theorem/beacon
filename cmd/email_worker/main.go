@@ -24,7 +24,7 @@ func main() {
 
 	w := worker.New(c, EMAIL_TASK_QUEUE, worker.Options{})
 
-	emailActivities := &temporal.EmailActivites{
+	emailActivities := &temporal.EmailActivities{
 		EmailService: emailService,
 	}
 
