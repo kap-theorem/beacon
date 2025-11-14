@@ -2,6 +2,7 @@ package notifier
 
 import "context"
 
+// NotifierType represents the type of notification channel.
 type NotifierType string
 
 const (

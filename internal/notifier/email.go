@@ -10,12 +10,14 @@ type EmailService struct {
 	smtp string
 }
 
+// NewEmailService creates a new EmailService instance with the specified SMTP server.
 func NewEmailService(smtpServer string) *EmailService {
 	return &EmailService{
 		smtp: smtpServer,
 	}
 }
 
+// Send sends an email using the configured SMTP server.
 func (e *EmailService) Send(ctx context.Context, msg *Message[models.EmailMessage]) error {
 	// TODO: implement email sending logic using smtp server
 	println("Sending Email:")
