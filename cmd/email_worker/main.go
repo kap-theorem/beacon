@@ -1,6 +1,7 @@
 package main
 
 import (
+	"beacon/internal/config"
 	"beacon/internal/notifier"
 	"beacon/internal/temporal"
 	"log"
@@ -9,9 +10,8 @@ import (
 	"go.temporal.io/sdk/worker"
 )
 
-const EMAIL_TASK_QUEUE = "email-task-queue"
-
 func main() {
+	// create Temporal client
 	c, err := client.Dial(client.Options{
 		HostPort: client.DefaultHostPort,
 	})
@@ -20,19 +20,26 @@ func main() {
 	}
 	defer c.Close()
 
-	emailService := notifier.NewEmailService("smtp.example.com")
+	// create temporal worker
+	emailNotifierConfig := config.GetTemporalConfig()
+	w := worker.New(c, emailNotifierConfig.EmailNotifierTaskQueue, worker.Options{})
 
-	w := worker.New(c, EMAIL_TASK_QUEUE, worker.Options{})
-
+	// create email service
+	emailServiceConfig := config.GetEmailServiceConfig()
 	emailActivities := &temporal.EmailActivities{
-		EmailService: emailService,
+		EmailService: notifier.NewEmailService(
+			emailServiceConfig.SMTPServer,
+			emailServiceConfig.SMTPPort,
+			emailServiceConfig.EmailUsername,
+			emailServiceConfig.EmailPassword,
+		),
 	}
 
 	// register workflows and activities
 	w.RegisterWorkflow(temporal.SendEmailWorkflow)
 	w.RegisterActivity(emailActivities.SendEmailActivity)
 
-	log.Println("Starting email worker on task queue:", EMAIL_TASK_QUEUE)
+	log.Println("Starting email worker on task queue:", emailNotifierConfig.EmailNotifierTaskQueue)
 	err = w.Run(worker.InterruptCh())
 	if err != nil {
 		log.Fatalln("Unable to start worker", err)
