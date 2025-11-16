@@ -1,0 +1,27 @@
+package notifier
+
+import (
+	"beacon/internal/models"
+	"context"
+)
+
+type EmailService struct {
+	// TODO: smtp server details
+	smtp string
+}
+
+func NewEmailService(smtpServer string) *EmailService {
+	return &EmailService{
+		smtp: smtpServer,
+	}
+}
+
+func (e *EmailService) Send(ctx context.Context, msg *Message[models.EmailMessage]) error {
+	// TODO: implement email sending logic using smtp server
+	println("Sending Email:")
+	println("To:", msg.Data.To)
+	println("Subject:", msg.Data.Subject)
+	println("Body:", msg.Data.Body)
+
+	return nil
+}
