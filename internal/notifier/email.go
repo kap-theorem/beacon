@@ -8,6 +8,9 @@ import (
 	gomail "gopkg.in/mail.v2"
 )
 
+// EmailNotifier represents the email notification channel.
+var EmailNotifier NotifierType = "email"
+
 // EmailService implements the Notifier interface for sending emails.
 type EmailService struct {
 	SmtpServer    string

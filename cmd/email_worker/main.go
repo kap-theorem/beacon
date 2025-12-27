@@ -7,31 +7,31 @@ import (
 	"log"
 
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/contrib/envconfig"
 	"go.temporal.io/sdk/worker"
 )
 
 func main() {
+	// load email notifier config
+	cfg := config.LoadEmailNotifierConfig()
+
 	// create Temporal client
-	c, err := client.Dial(client.Options{
-		HostPort: client.DefaultHostPort,
-	})
+	c, err := client.Dial(envconfig.MustLoadDefaultClientOptions())
 	if err != nil {
 		log.Fatalln("Unable to create Temporal client", err)
 	}
 	defer c.Close()
 
 	// create temporal worker
-	emailNotifierConfig := config.GetTemporalConfig()
-	w := worker.New(c, emailNotifierConfig.EmailNotifierTaskQueue, worker.Options{})
+	w := worker.New(c, cfg.EmailNotifierTaskQueue, worker.Options{})
 
 	// create email service
-	emailServiceConfig := config.GetEmailServiceConfig()
 	emailActivities := &temporal.EmailActivities{
 		EmailService: notifier.NewEmailService(
-			emailServiceConfig.SMTPServer,
-			emailServiceConfig.SMTPPort,
-			emailServiceConfig.EmailUsername,
-			emailServiceConfig.EmailPassword,
+			cfg.SMTPServer,
+			cfg.SMTPPort,
+			cfg.SMTPUsername,
+			cfg.SMTPPassword,
 		),
 	}
 
@@ -39,7 +39,7 @@ func main() {
 	w.RegisterWorkflow(temporal.SendEmailWorkflow)
 	w.RegisterActivity(emailActivities.SendEmailActivity)
 
-	log.Println("Starting email worker on task queue:", emailNotifierConfig.EmailNotifierTaskQueue)
+	log.Println("Starting email worker on task queue:", cfg.EmailNotifierTaskQueue)
 	err = w.Run(worker.InterruptCh())
 	if err != nil {
 		log.Fatalln("Unable to start worker", err)

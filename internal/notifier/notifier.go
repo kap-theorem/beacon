@@ -5,11 +5,7 @@ import "context"
 // NotifierType represents the type of notification channel.
 type NotifierType string
 
-const (
-	SMSNotifier   NotifierType = "sms"
-	EmailNotifier NotifierType = "email"
-)
-
+// Message represents a notification message with generic data type.
 type Message[T any] struct {
 	ID       string
 	Type     NotifierType
@@ -17,6 +13,8 @@ type Message[T any] struct {
 	Metadata map[string]string
 }
 
+// Notifier defines the interface for sending notifications of
+// generic data type.
 type Notifier[T any] interface {
 	Send(ctx context.Context, msg *Message[T]) error
 }

@@ -2,33 +2,27 @@ package config
 
 import (
 	"log"
-	"sync"
+	"os"
 
 	"github.com/joho/godotenv"
+	"gopkg.in/yaml.v3"
 )
 
-// Config holds all application configuration
-type Config struct {
-	Temporal      *TemporalConfig
-	EmailNotifier *EmailNotifierConfig
-}
-
+// Temporal Server configuration
 type TemporalConfig struct {
-	EmailNotifierTaskQueue string
+	Address   string `yaml:"address"`
+	Namespace string `yaml:"namespace"`
 }
 
+// Email Notifier configuration
 type EmailNotifierConfig struct {
-	SMTPServer    string
-	SMTPPort      int
-	EmailUsername string
-	EmailPassword string
+	TemporalConfig
+	SMTPServer             string `yaml:"smtp_server"`
+	SMTPPort               int    `yaml:"smtp_port"`
+	SMTPUsername           string
+	SMTPPassword           string
+	EmailNotifierTaskQueue string `yaml:"task_queue"`
 }
-
-var (
-	instance *Config
-	once     sync.Once
-	envFile  string
-)
 
 // loadEnv loads environment variables from the specified file
 func loadEnv(file string) {
@@ -38,42 +32,36 @@ func loadEnv(file string) {
 	}
 }
 
-// Initialize sets the env file path and should be called once at application startup
-func Initialize(file string) {
-	envFile = file
+// loadTemporalConfig loads Temporal configuration from temporal.yaml
+func loadTemporalConfig() *TemporalConfig {
+	baseConfigYaml, err := os.ReadFile("internal/config/temporal.yaml")
+	if err != nil {
+		log.Fatalln("Error reading base config file:", err)
+	}
+	var temporalConfig = &TemporalConfig{}
+	yaml.Unmarshal(baseConfigYaml, &temporalConfig)
+	return temporalConfig
 }
 
-// GetInstance returns the singleton config instance
-// It initializes the config on first call using the env file set by Initialize
-func GetInstance() *Config {
-	once.Do(func() {
-		if envFile == "" {
-			log.Fatalln("Config not initialized. Call config.Initialize(envFile) first")
-		}
-		loadEnv(envFile)
-		instance = &Config{
-			Temporal: &TemporalConfig{
-				EmailNotifierTaskQueue: GetString("TEMPORAL_EMAIL_NOTIFIER_TASK_QUEUE", ""),
-			},
-			EmailNotifier: &EmailNotifierConfig{
-				SMTPServer:    GetString("SMTP_SERVER", ""),
-				SMTPPort:      GetInt("SMTP_PORT", 587),
-				EmailUsername: GetString("USERNAME", ""),
-				EmailPassword: GetString("PASSWORD", ""),
-			},
-		}
-	})
-	return instance
-}
+// LoadEmailNotifierConfig loads Email Notifier configuration from
+// email_worker.yaml and environment variables
+func LoadEmailNotifierConfig() *EmailNotifierConfig {
+	var emailNotifierConfig = &EmailNotifierConfig{}
 
-// GetTemporalConfig returns the temporal configuration (deprecated: use GetInstance().Temporal)
-func GetTemporalConfig() *TemporalConfig {
-	Initialize(".env.mail.notifier")
-	return GetInstance().Temporal
-}
+	// Email Notifier requires temporal config as base
+	temporalConfig := loadTemporalConfig()
+	emailNotifierConfig.TemporalConfig = *temporalConfig
 
-// GetEmailServiceConfig returns the email service configuration (deprecated: use GetInstance().EmailNotifier)
-func GetEmailServiceConfig() *EmailNotifierConfig {
-	Initialize(".env.mail.notifier")
-	return GetInstance().EmailNotifier
+	// Load email notifier specific config from yaml
+	emailConfigYaml, err := os.ReadFile("internal/config/email_worker.yaml")
+	if err != nil {
+		log.Fatalln("Error reading email worker config file:", err)
+	}
+	yaml.Unmarshal(emailConfigYaml, &emailNotifierConfig)
+
+	// Load sensitive info from environment variables
+	loadEnv(".env.email_worker")
+	emailNotifierConfig.SMTPUsername = GetString("SMTP_CLIENT_USERNAME", "")
+	emailNotifierConfig.SMTPPassword = GetString("SMTP_CLIENT_PASSWORD", "")
+	return emailNotifierConfig
 }
