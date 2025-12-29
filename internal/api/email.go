@@ -20,7 +20,7 @@ type EmailHandler struct {
 }
 
 // HandleEmailNotification handles "POST /notify/email"
-func (h *EmailHandler) HandlerRequest(w http.ResponseWriter, req *http.Request) {
+func (h *EmailHandler) HandleRequest(w http.ResponseWriter, req *http.Request) {
 	// validate request method
 	if req.Method != http.MethodPost {
 		utils.WriteError(w, http.StatusMethodNotAllowed, "unsupported method")
