@@ -1,7 +1,7 @@
 package main
 
 import (
-	"beacon/internal/config"
+	"beacon/config"
 	"beacon/internal/models"
 	"beacon/internal/temporal"
 	"context"

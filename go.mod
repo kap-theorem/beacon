@@ -8,6 +8,7 @@ require (
 	go.temporal.io/sdk v1.37.0
 	go.temporal.io/sdk/contrib/envconfig v0.1.0
 	gopkg.in/mail.v2 v2.3.1
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -34,5 +35,4 @@ require (
 	google.golang.org/grpc v1.77.0 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
 	gopkg.in/alexcesaro/quotedprintable.v3 v3.0.0-20150716171945-2caba252f4dc // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
