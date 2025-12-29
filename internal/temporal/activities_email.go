@@ -9,11 +9,11 @@ import (
 	"github.com/google/uuid"
 )
 
-type EmailActivites struct {
+type EmailActivities struct {
 	EmailService notifier.Notifier[models.EmailMessage]
 }
 
-func (a *EmailActivites) SendEmailActivity(ctx context.Context, msg *models.EmailMessage) error {
+func (a *EmailActivities) SendEmailActivity(ctx context.Context, msg *models.EmailMessage) error {
 	return a.EmailService.Send(ctx, &notifier.Message[models.EmailMessage]{
 		ID:   uuid.NewString(),
 		Type: notifier.EmailNotifier,

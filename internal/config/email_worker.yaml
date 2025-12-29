@@ -1,0 +1,3 @@
+task_queue: "email-task-queue"
+smtp_server: "smtp.hostinger.com"
+smtp_port: 587

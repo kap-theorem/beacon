@@ -1,18 +1,24 @@
 package main
 
 import (
+	"beacon/internal/config"
 	"beacon/internal/models"
 	"beacon/internal/temporal"
 	"context"
 	"log"
 
+	"github.com/joho/godotenv"
 	"go.temporal.io/sdk/client"
 )
 
-const EMAIL_TASK_QUEUE = "email-task-queue"
-
 func main() {
-	// Create Temporal client
+	// load envs
+	envFile, err := godotenv.Read(".env.email_worker")
+	if err != nil {
+		log.Fatalln("Error loading env file", err)
+	}
+
+	// create Temporal client
 	c, err := client.Dial(client.Options{
 		HostPort: client.DefaultHostPort,
 	})
@@ -21,24 +27,22 @@ func main() {
 	}
 	defer c.Close()
 
-	// Create email request
+	// create sample email request
 	emailReq := &models.EmailMessage{
-		To:      "user@example.com",
+		To:      envFile["SAMPLE_EMAIL_TO"],
 		Subject: "Test Email from Beacon",
-		Body:    "This is a test email sent via Temporal workflow",
+		Body:    "Hi! this is a test email from Beacon. Have a great day!",
 	}
 
-	// Start workflow execution
+	// start workflow execution
 	workflowOptions := client.StartWorkflowOptions{
-		ID:        "email-workflow-1",
-		TaskQueue: EMAIL_TASK_QUEUE,
+		ID:        "email-workflow-" + envFile["SAMPLE_EMAIL_TO"],
+		TaskQueue: config.LoadEmailNotifierConfig().EmailNotifierTaskQueue,
 	}
-
 	we, err := c.ExecuteWorkflow(context.Background(), workflowOptions, temporal.SendEmailWorkflow, emailReq)
 	if err != nil {
 		log.Fatalln("Unable to execute workflow", err)
 	}
-
 	log.Printf("Started workflow with ID: %s, RunID: %s\n", we.GetID(), we.GetRunID())
 
 	// Wait for workflow to complete
@@ -47,6 +51,5 @@ func main() {
 	if err != nil {
 		log.Fatalln("Unable to get workflow result", err)
 	}
-
 	log.Println("Workflow completed successfully!")
 }
