@@ -1,6 +1,7 @@
 package main
 
 import (
+	"beacon/internal/config"
 	"beacon/internal/models"
 	"beacon/internal/temporal"
 	"context"
@@ -12,7 +13,7 @@ import (
 
 func main() {
 	// load envs
-	envFile, err := godotenv.Read(".env.mail.notifier")
+	envFile, err := godotenv.Read(".env.email_worker")
 	if err != nil {
 		log.Fatalln("Error loading env file", err)
 	}
@@ -36,7 +37,7 @@ func main() {
 	// start workflow execution
 	workflowOptions := client.StartWorkflowOptions{
 		ID:        "email-workflow-" + envFile["SAMPLE_EMAIL_TO"],
-		TaskQueue: envFile["TEMPORAL_EMAIL_NOTIFIER_TASK_QUEUE"],
+		TaskQueue: config.LoadEmailNotifierConfig().EmailNotifierTaskQueue,
 	}
 	we, err := c.ExecuteWorkflow(context.Background(), workflowOptions, temporal.SendEmailWorkflow, emailReq)
 	if err != nil {
