@@ -42,7 +42,7 @@ func (h *EmailHandler) HandlerRequest(w http.ResponseWriter, req *http.Request) 
 		TaskQueue: h.EmailNotifierTaskQueue,
 	}
 	// execute workflow
-	we, err := h.TemporalClient.ExecuteWorkflow(req.Context(), workflowOptions, temporal.SendEmailWorkflow, request)
+	we, err := h.TemporalClient.ExecuteWorkflow(req.Context(), workflowOptions, temporal.SendEmailWorkflow, &request)
 	if err != nil {
 		log.Printf("Unable to execute workflow: %v", err)
 		utils.WriteError(w, http.StatusInternalServerError, "failed to trigger email notification")
