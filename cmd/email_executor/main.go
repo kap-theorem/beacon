@@ -17,7 +17,6 @@ func main() {
 	if err != nil {
 		log.Fatalln("Error loading env file", err)
 	}
-
 	// create Temporal client
 	c, err := client.Dial(client.Options{
 		HostPort: client.DefaultHostPort,
@@ -26,14 +25,12 @@ func main() {
 		log.Fatalln("Unable to create Temporal client", err)
 	}
 	defer c.Close()
-
 	// create sample email request
 	emailReq := &models.EmailMessage{
 		To:      envFile["SAMPLE_EMAIL_TO"],
 		Subject: "Test Email from Beacon",
 		Body:    "Hi! this is a test email from Beacon. Have a great day!",
 	}
-
 	// start workflow execution
 	workflowOptions := client.StartWorkflowOptions{
 		ID:        "email-workflow-" + envFile["SAMPLE_EMAIL_TO"],
@@ -44,7 +41,6 @@ func main() {
 		log.Fatalln("Unable to execute workflow", err)
 	}
 	log.Printf("Started workflow with ID: %s, RunID: %s\n", we.GetID(), we.GetRunID())
-
 	// Wait for workflow to complete
 	var result interface{}
 	err = we.Get(context.Background(), &result)
