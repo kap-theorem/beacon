@@ -34,7 +34,7 @@ func loadEnv(file string) {
 
 // loadTemporalConfig loads Temporal configuration from temporal.yaml
 func loadTemporalConfig() *TemporalConfig {
-	baseConfigYaml, err := os.ReadFile("internal/config/temporal.yaml")
+	baseConfigYaml, err := os.ReadFile("config/temporal.yaml")
 	if err != nil {
 		log.Fatalln("Error reading base config file:", err)
 	}
@@ -53,7 +53,7 @@ func LoadEmailNotifierConfig() *EmailNotifierConfig {
 	emailNotifierConfig.TemporalConfig = *temporalConfig
 
 	// Load email notifier specific config from yaml
-	emailConfigYaml, err := os.ReadFile("internal/config/email_worker.yaml")
+	emailConfigYaml, err := os.ReadFile("config/email_worker.yaml")
 	if err != nil {
 		log.Fatalln("Error reading email worker config file:", err)
 	}

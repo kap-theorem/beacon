@@ -1,7 +1,7 @@
 package main
 
 import (
-	"beacon/internal/config"
+	"beacon/config"
 	"beacon/internal/notifier"
 	"beacon/internal/temporal"
 	"log"
