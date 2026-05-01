@@ -34,7 +34,7 @@ go.work.sum
 # Binaries
 bin/
 email_worker
-http
+server
 
 # Claude
 .claude/
