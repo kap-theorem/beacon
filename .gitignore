@@ -30,3 +30,13 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Binaries
+bin/
+email_worker
+http
+
+# Claude
+.claude/
+.aidlc-rule-details/
+aidlc-docs/

@@ -1,0 +1,20 @@
+{
+  "name": "sendgrid",
+  "provider": "sendgrid",
+  "host": "smtp.sendgrid.net",
+  "port": 587,
+  "username": "apikey",
+  "password": "SG.your-api-key-here",
+  "auth_type": "PLAIN",
+  "tls": {
+    "enabled": true,
+    "server_name": "smtp.sendgrid.net"
+  },
+  "timeout": "30s",
+  "max_retries": 3,
+  "max_per_hour": 0,
+  "rules": {
+    "daily_limit": 0,
+    "hourly_limit": 0
+  }
+}

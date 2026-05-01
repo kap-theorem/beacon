@@ -26,6 +26,13 @@ func (h *EmailHandler) HandleRequest(w http.ResponseWriter, req *http.Request) {
 		utils.WriteError(w, http.StatusMethodNotAllowed, "unsupported method")
 		return
 	}
+
+	// check if Temporal client is available
+	if h.TemporalClient == nil {
+		utils.WriteError(w, http.StatusServiceUnavailable, "temporal service not available")
+		return
+	}
+
 	// parse request body
 	var request models.EmailMessage
 	if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
