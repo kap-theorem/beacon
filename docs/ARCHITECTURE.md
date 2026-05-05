@@ -36,6 +36,17 @@ Failed activities are retried with exponential backoff before the workflow fault
 
 Loads and validates SMTP provider configuration at startup. In production this is fetched from Infisical; in development it falls back to environment variables (`DEV_MODE=true`).
 
+## Component Inventory
+
+| Component | Path | Description |
+|---|---|---|
+| HTTP Server | `cmd/http/` | REST API for submitting notifications and health checks |
+| Email Worker | `cmd/email_worker/` | Temporal worker that executes email send workflows |
+| Config Service | `internal/config/` | Loads and validates SMTP configs from Infisical (or dev env vars) |
+| Email Notifier | `internal/notifier/` | SMTP email delivery using `gopkg.in/mail.v2` |
+| Temporal Layer | `internal/temporal/` | Workflow and activity definitions |
+| API Handlers | `internal/api/` | HTTP request/response handling |
+
 ## Request Lifecycle
 
 1. Upstream POSTs `{ to, subject, body }` to `/notify/email`
