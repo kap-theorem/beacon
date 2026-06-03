@@ -10,11 +10,11 @@ import (
 )
 
 type EmailActivities struct {
-	EmailService notifier.Notifier[models.EmailMessage]
+	GetService func() notifier.Notifier[models.EmailMessage]
 }
 
 func (a *EmailActivities) SendEmailActivity(ctx context.Context, msg *models.EmailMessage) error {
-	return a.EmailService.Send(ctx, &notifier.Message[models.EmailMessage]{
+	return a.GetService().Send(ctx, &notifier.Message[models.EmailMessage]{
 		ID:   uuid.NewString(),
 		Type: notifier.EmailNotifier,
 		Data: *msg,

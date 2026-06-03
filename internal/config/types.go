@@ -38,6 +38,10 @@ type SMTPClientConfig struct {
 	MaxRetries int           `json:"max_retries"`
 	MaxPerHour int           `json:"max_per_hour"`
 	Rules      RuleSet       `json:"rules,omitempty"`
+	Categories  []string      `json:"categories,omitempty"`
+	IsDefault   bool          `json:"is_default,omitempty"`
+	FromAddress string        `json:"from_address,omitempty"`
+	FromName    string        `json:"from_name,omitempty"`
 }
 
 func (c *SMTPClientConfig) String() string {
