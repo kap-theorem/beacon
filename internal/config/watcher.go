@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 )
@@ -35,6 +36,9 @@ func (w *ConfigWatcher) Start(ctx context.Context) {
 		case <-ticker.C:
 			prevRevision := w.service.GetRevision()
 			if err := w.service.RefreshConfig(ctx); err != nil {
+				if errors.Is(err, ErrDevModeSkip) {
+					continue
+				}
 				w.logger.Warn("config poll failed", slog.Any("error", err))
 				continue
 			}

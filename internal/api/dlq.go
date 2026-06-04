@@ -36,14 +36,20 @@ func (h *DLQHandler) HandleQueryFailures(w http.ResponseWriter, req *http.Reques
 	}
 
 	if raw := q.Get("from"); raw != "" {
-		if t, err := time.Parse(time.RFC3339, raw); err == nil {
-			filter.FromDate = t
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			utils.WriteError(w, http.StatusBadRequest, `invalid "from" date: must be RFC3339`)
+			return
 		}
+		filter.FromDate = t
 	}
 	if raw := q.Get("to"); raw != "" {
-		if t, err := time.Parse(time.RFC3339, raw); err == nil {
-			filter.ToDate = t
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			utils.WriteError(w, http.StatusBadRequest, `invalid "to" date: must be RFC3339`)
+			return
 		}
+		filter.ToDate = t
 	}
 	if raw := q.Get("limit"); raw != "" {
 		if v, err := strconv.Atoi(raw); err == nil {
@@ -93,6 +99,10 @@ func (h *DLQHandler) HandleReplay(w http.ResponseWriter, req *http.Request) {
 		}
 		if errors.Is(err, dlq.ErrNotTerminalState) {
 			utils.WriteError(w, http.StatusConflict, "workflow is still running; replay not allowed")
+			return
+		}
+		if errors.Is(err, dlq.ErrReplayAlreadyRunning) {
+			utils.WriteError(w, http.StatusConflict, "replay already in progress for workflow: "+workflowID)
 			return
 		}
 		h.logger.Error("DLQ replay failed", slog.String("workflow_id", workflowID), slog.Any("error", err))

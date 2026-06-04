@@ -4,6 +4,7 @@ import (
 	"beacon/internal/config"
 	"beacon/internal/notifier"
 	"beacon/utils"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -40,6 +41,10 @@ func (h *AdminHandler) HandleConfigRefresh(w http.ResponseWriter, req *http.Requ
 	}
 
 	if err := h.ConfigService.RefreshConfig(req.Context()); err != nil {
+		if errors.Is(err, config.ErrDevModeSkip) {
+			utils.WriteError(w, http.StatusServiceUnavailable, "config refresh is not available in DEV_MODE")
+			return
+		}
 		h.logger.Error("admin config refresh failed", slog.Any("error", err))
 		utils.WriteError(w, http.StatusInternalServerError, "config refresh failed")
 		return
