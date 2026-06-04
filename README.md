@@ -28,7 +28,7 @@ Beacon is an async notification service built in Go. It currently supports email
 
 3. Run the services:
    ```bash
-   make run-http &
+   make run-server &
    make run-email-worker
    ```
 

@@ -21,7 +21,7 @@
 
 3. Build and run:
    ```bash
-   make run-http &
+   make run-server &
    make run-email-worker
    ```
 
@@ -39,11 +39,11 @@
 make build
 
 # Build individually
-make build-http
+make build-server
 make build-email-worker
 
 # Run
-make run-http          # starts HTTP server
+make run-server        # starts HTTP server
 make run-email-worker  # starts Temporal worker
 
 # Clean
