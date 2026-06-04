@@ -27,7 +27,11 @@ Value: (paste JSON config with your credentials)
 ### 4️⃣ Set Environment Variables
 ```bash
 export INFISICAL_ADDR="https://app.infisical.com"
+export INFISICAL_PROJECT_ID="your-project-id"
+export INFISICAL_ENVIRONMENT="prod"
+# Dev/testing: use INFISICAL_TOKEN (legacy API token)
 export INFISICAL_TOKEN="k8qTW..."
+# Production: use Machine Identity instead — see "Environment Variables Explained" below
 export TEMPORAL_ADDRESS="localhost:7233"
 export TEMPORAL_NAMESPACE="default"
 ```
@@ -153,9 +157,15 @@ Replace values with your actual credentials:
 | Variable | Where to Get | Example |
 |----------|-------------|---------|
 | **INFISICAL_ADDR** | Infisical dashboard URL or your self-hosted URL | `https://app.infisical.com` |
-| **INFISICAL_TOKEN** | Settings → API Tokens → Create & Copy | `k8qTW...` |
+| **INFISICAL_PROJECT_ID** | Infisical project settings | `abc123...` |
+| **INFISICAL_ENVIRONMENT** | Environment name in your Infisical project | `prod` |
+| **INFISICAL_TOKEN** | Settings → API Tokens → Create & Copy (dev/testing) | `k8qTW...` |
+| **INFISICAL_CLIENT_ID** | Machine Identity → Create → Client ID (production) | `mi-abc...` |
+| **INFISICAL_CLIENT_SECRET** | Machine Identity → Create → Client Secret (production) | `secret...` |
 | **TEMPORAL_ADDRESS** | Your Temporal server | `localhost:7233` |
 | **TEMPORAL_NAMESPACE** | Temporal namespace | `default` |
+
+> **Production auth**: Use `INFISICAL_CLIENT_ID` + `INFISICAL_CLIENT_SECRET` (Machine Identity) for production deployments. `INFISICAL_TOKEN` is supported but is the legacy method. See [Configuration Reference](../CONFIGURATION.md#authentication) for the full auth priority order.
 
 ### Where to Set Them
 
@@ -189,6 +199,9 @@ docker run \
 ```
 
 **Option 4: Kubernetes (for production)**
+
+Use Machine Identity credentials for production (see [Configuration Reference](../CONFIGURATION.md#authentication)):
+
 ```yaml
 apiVersion: v1
 kind: Secret
@@ -197,7 +210,9 @@ metadata:
 type: Opaque
 stringData:
   addr: "https://app.infisical.com"
-  token: "k8qTW..."
+  project-id: "your-project-id"
+  client-id: "your-machine-identity-client-id"
+  client-secret: "your-machine-identity-client-secret"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -214,11 +229,23 @@ spec:
             secretKeyRef:
               name: infisical-credentials
               key: addr
-        - name: INFISICAL_TOKEN
+        - name: INFISICAL_PROJECT_ID
           valueFrom:
             secretKeyRef:
               name: infisical-credentials
-              key: token
+              key: project-id
+        - name: INFISICAL_ENVIRONMENT
+          value: "prod"
+        - name: INFISICAL_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: infisical-credentials
+              key: client-id
+        - name: INFISICAL_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: infisical-credentials
+              key: client-secret
 ```
 
 ---
@@ -298,17 +325,17 @@ When everything is working:
 
 ---
 
-## Next: What to Do Next
+## What to Do Next
 
 Once your real Infisical integration works:
 
 ### Short Term
 1. **Test with multiple providers** — Add SendGrid, Mailgun, and AWS SES to Infisical
-2. **Test email sending** — Integrate with U2 to route emails to different providers
+2. **Test email sending** — Use `client_hint` to route emails to different providers
 3. **Monitor logs** — Watch for validation errors or connection issues
 
 ### Medium Term
-1. **Enable hot-reload** — U3 will auto-refresh configs when Infisical updates
+1. **Enable hot-reload** — Set `CONFIG_POLL_INTERVAL` to auto-refresh configs from Infisical
 2. **Set up alerting** — Monitor cache staleness (24h threshold)
 3. **Implement secret rotation** — Plan for API key rotation strategy
 
@@ -324,7 +351,6 @@ Once your real Infisical integration works:
 | File | Purpose |
 |------|---------|
 | `INFISICAL_SETUP.md` | Detailed step-by-step guide |
-| `INFISICAL_CHECKLIST.md` | Checklist to follow |
 | `CONFIG.md` | Configuration documentation |
 | `QUICK_TEST.md` | Mock server testing |
 | `internal/config/` | Config service code |

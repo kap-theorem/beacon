@@ -109,7 +109,8 @@ For each email provider, create a secret in `/beacon/smtp/` with the provider na
     "server_name": "email-smtp.us-east-1.amazonaws.com"
   },
   "timeout": "30s",
-  "max_retries": 3
+  "max_retries": 3,
+  "max_per_hour": 0
 }
 ```
 
@@ -132,7 +133,8 @@ For each email provider, create a secret in `/beacon/smtp/` with the provider na
     "server_name": "smtp.mailgun.org"
   },
   "timeout": "30s",
-  "max_retries": 3
+  "max_retries": 3,
+  "max_per_hour": 0
 }
 ```
 
@@ -335,9 +337,9 @@ Infisical Folder Structure:
 
 Once your real Infisical integration is working:
 
-1. **Test email sending** — Integrate with U2 (multi-provider routing)
+1. **Test email sending** — Use `client_hint` to route emails to different providers
 2. **Add more providers** — Update Infisical, no code changes needed
-3. **Enable hot-reload** — U3 will refresh configs on demand
+3. **Enable hot-reload** — Set `CONFIG_POLL_INTERVAL` to auto-refresh configs from Infisical
 4. **Monitor in production** — Check health endpoints, review logs
 5. **Deploy to Cloudflare** — Use the INFISICAL_ADDR and INFISICAL_TOKEN in your deployment
 

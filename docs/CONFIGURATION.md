@@ -25,7 +25,7 @@ Beacon is configured via environment variables. Copy `.env.example` to `.env` an
 
 ## SMTP Config (via Infisical — production)
 
-Beacon loads SMTP provider configuration from [Infisical](https://infisical.com/) at path `/beacon/smtp`. See `infisical-example.json` for the expected JSON shape.
+Beacon loads SMTP provider configuration from [Infisical](https://infisical.com/) at path `/beacon/smtp`. See [`infisical-example.json`](../infisical-example.json) for the expected JSON shape.
 
 ### Connection
 
