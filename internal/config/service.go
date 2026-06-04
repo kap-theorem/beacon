@@ -310,6 +310,9 @@ func (cs *ConfigService) GetConfig() *ConfigBundle {
 }
 
 func (cs *ConfigService) RefreshConfig(ctx context.Context) error {
+	if cs.authMethod == "dev" {
+		return nil
+	}
 	bundle, err := cs.LoadWithRetry(ctx)
 	if err != nil {
 		cs.mu.RLock()
