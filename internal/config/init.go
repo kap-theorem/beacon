@@ -103,15 +103,22 @@ func buildDevBundle() (*ConfigBundle, error) {
 		authType = AuthPlain
 	}
 
+	fromAddr := os.Getenv("DEV_SMTP_FROM")
+	if fromAddr == "" {
+		fromAddr = firstNonEmpty(os.Getenv("DEV_SMTP_USERNAME"), "noreply@beacon.local")
+	}
+
 	cfg := &SMTPClientConfig{
-		Name:       name,
-		Provider:   firstNonEmpty(os.Getenv("DEV_SMTP_PROVIDER"), name),
-		Host:       host,
-		Port:       port,
-		Username:   os.Getenv("DEV_SMTP_USERNAME"),
-		Password:   os.Getenv("DEV_SMTP_PASSWORD"),
-		AuthType:   authType,
-		MaxRetries: 3,
+		Name:        name,
+		Provider:    firstNonEmpty(os.Getenv("DEV_SMTP_PROVIDER"), name),
+		Host:        host,
+		Port:        port,
+		Username:    os.Getenv("DEV_SMTP_USERNAME"),
+		Password:    os.Getenv("DEV_SMTP_PASSWORD"),
+		AuthType:    authType,
+		MaxRetries:  3,
+		FromAddress: fromAddr,
+		FromName:    firstNonEmpty(os.Getenv("DEV_SMTP_FROM_NAME"), "Beacon"),
 	}
 
 	return &ConfigBundle{

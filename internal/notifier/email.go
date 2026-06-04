@@ -17,15 +17,19 @@ type EmailService struct {
 	SmtpPort      int
 	EmailUsername string
 	EmailPassword string
+	FromAddress   string
+	FromName      string
 }
 
 // NewEmailService creates a new EmailService instance with the specified SMTP server.
-func NewEmailService(smtpServer string, port int, username, password string) *EmailService {
+func NewEmailService(smtpServer string, port int, username, password, fromAddress, fromName string) *EmailService {
 	return &EmailService{
 		SmtpServer:    smtpServer,
 		SmtpPort:      port,
 		EmailUsername: username,
 		EmailPassword: password,
+		FromAddress:   fromAddress,
+		FromName:      fromName,
 	}
 }
 
@@ -34,14 +38,12 @@ func (e *EmailService) Send(ctx context.Context, msg *Message[models.EmailMessag
 
 	log.Println("Sending email to", msg.Data.To)
 
-	// new mail message
 	mail := gomail.NewMessage()
-	mail.SetAddressHeader("From", e.EmailUsername, "kaplabs")
+	mail.SetAddressHeader("From", e.FromAddress, e.FromName)
 	mail.SetHeader("To", msg.Data.To)
 	mail.SetHeader("Subject", msg.Data.Subject)
 	mail.SetBody("text/plain", msg.Data.Body)
 
-	// dial smtp server and send the email
 	dialer := gomail.NewDialer(e.SmtpServer, e.SmtpPort, e.EmailUsername, e.EmailPassword)
 	if err := dialer.DialAndSend(mail); err != nil {
 		log.Println("Failed to send email to", msg.Data.To, ":", err)

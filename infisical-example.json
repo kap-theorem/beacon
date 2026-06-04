@@ -1,20 +1,42 @@
 {
-  "name": "sendgrid",
-  "provider": "sendgrid",
-  "host": "smtp.sendgrid.net",
-  "port": 587,
-  "username": "apikey",
-  "password": "SG.your-api-key-here",
-  "auth_type": "PLAIN",
-  "tls": {
-    "enabled": true,
-    "server_name": "smtp.sendgrid.net"
-  },
-  "timeout": "30s",
-  "max_retries": 3,
-  "max_per_hour": 0,
-  "rules": {
-    "daily_limit": 0,
-    "hourly_limit": 0
+  "_comment": "Store one JSON object per SMTP provider as a separate secret under /beacon/smtp in Infisical.",
+  "_comment2": "The secret key is the provider name (e.g. 'sendgrid-transactional'). Set is_default: true on exactly one provider.",
+  "examples": {
+    "sendgrid-transactional": {
+      "name": "sendgrid-transactional",
+      "provider": "sendgrid",
+      "host": "smtp.sendgrid.net",
+      "port": 587,
+      "username": "apikey",
+      "password": "SG.your-api-key-here",
+      "auth_type": "PLAIN",
+      "tls": {
+        "enabled": true,
+        "server_name": "smtp.sendgrid.net"
+      },
+      "timeout": "30s",
+      "max_retries": 3,
+      "max_per_hour": 0,
+      "categories": ["transactional", "otp"],
+      "is_default": true
+    },
+    "mailgun-marketing": {
+      "name": "mailgun-marketing",
+      "provider": "mailgun",
+      "host": "smtp.mailgun.org",
+      "port": 587,
+      "username": "marketing@yourdomain.com",
+      "password": "your-mailgun-smtp-password",
+      "auth_type": "PLAIN",
+      "tls": {
+        "enabled": true,
+        "server_name": "smtp.mailgun.org"
+      },
+      "timeout": "30s",
+      "max_retries": 3,
+      "max_per_hour": 500,
+      "categories": ["marketing"],
+      "is_default": false
+    }
   }
 }
