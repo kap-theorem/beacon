@@ -3,8 +3,7 @@
 ## Fastest Way to Test (5 minutes)
 
 ```bash
-# Run the automated test script
-cd /Users/kushalkrishnappa/Playground/beacon
+# Run the automated test script (from the project root)
 bash scripts/test-local.sh
 ```
 
@@ -36,6 +35,7 @@ Config: fail-count=0, slow-ms=0, bad-json=false
 
 ```bash
 export INFISICAL_ADDR="http://localhost:8000"
+# Any token value works with the mock server; for real Infisical use Machine Identity or API Key
 export INFISICAL_TOKEN="test-token"
 export TEMPORAL_ADDRESS="localhost:7233"
 export TEMPORAL_NAMESPACE="default"
@@ -154,21 +154,23 @@ The service should handle concurrent requests without issues.
 After running, you should see:
 
 ```
-/Users/kushalkrishnappa/Playground/beacon/
+<project-root>/
 ├── internal/config/
 │   ├── types.go          (Domain entities)
 │   ├── service.go        (ConfigService with retry logic)
 │   ├── validation.go     (Config validation)
-│   ├── init.go          (Global service initialization)
-│   └── health.go        (Health check handlers)
-├── CONFIG.md            (Setup documentation)
-├── TESTING.md          (Detailed testing guide)
-├── QUICK_TEST.md       (This file)
+│   ├── watcher.go        (ConfigWatcher — polls Infisical on interval)
+│   ├── init.go           (Global service initialization)
+│   └── health.go         (Health check handlers)
+├── docs/infisical/
+│   ├── CONFIG.md         (Setup documentation)
+│   ├── TESTING.md        (Detailed testing guide)
+│   └── QUICK_TEST.md     (This file)
 ├── scripts/
 │   ├── mock-infisical.go    (Mock server)
 │   └── test-local.sh        (Automated test script)
 └── cmd/
-    └── http/main.go    (Updated with config service)
+    └── server/server.go  (HTTP server entry point)
 ```
 
 ## Troubleshooting
@@ -195,7 +197,7 @@ After running, you should see:
 
 Once these tests pass, you can:
 
-1. **Set up real Infisical** — Update INFISICAL_ADDR and INFISICAL_TOKEN to point to your real Infisical instance
+1. **Set up real Infisical** — Update `INFISICAL_ADDR` and configure authentication; see [Configuration Reference](../CONFIGURATION.md#authentication) for Machine Identity setup (recommended for production)
 2. **Deploy to Cloudflare Tunnel** — Follow setup in CONFIG.md
 3. **Test with real email providers** — Add real provider configs to Infisical
 4. **Integrate with U2** — Multi-email routing (U2) depends on this config service

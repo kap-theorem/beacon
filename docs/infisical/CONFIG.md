@@ -12,13 +12,21 @@ Set these environment variables before starting any Beacon service:
 # Infisical server address (required)
 export INFISICAL_ADDR="https://infisical.example.com"
 
-# Infisical API token (required)
-export INFISICAL_TOKEN="your-infisical-token"
+# Authentication (Machine Identity — recommended for production)
+export INFISICAL_CLIENT_ID="your-machine-identity-client-id"
+export INFISICAL_CLIENT_SECRET="your-machine-identity-client-secret"
+# Alternative: set INFISICAL_API_KEY (API key) or INFISICAL_TOKEN (legacy token)
 
-# Temporal configuration (existing)
+# Infisical project (required)
+export INFISICAL_PROJECT_ID="your-project-id"
+export INFISICAL_ENVIRONMENT="prod"
+
+# Temporal configuration
 export TEMPORAL_ADDRESS="localhost:7233"
 export TEMPORAL_NAMESPACE="default"
 ```
+
+See [Configuration Reference](../CONFIGURATION.md) for the full list of variables.
 
 ## Infisical Setup
 
@@ -163,6 +171,7 @@ Check logs for any validation errors or connection issues:
 
 1. **Check Infisical Connection**:
    ```bash
+   # Replace $INFISICAL_TOKEN with the credential for your auth method (see Environment Variables above)
    curl -H "Authorization: Bearer $INFISICAL_TOKEN" \
      "$INFISICAL_ADDR/api/v4/secrets?workspaceId=&environment=prod&secretPath=/beacon/smtp"
    ```
@@ -219,7 +228,7 @@ To deploy Beacon behind a Cloudflare Tunnel:
 
 ## API Endpoints
 
-See [docs/API.md](../../API.md) for the complete API reference including the DLQ and admin endpoints.
+See [docs/API.md](../API.md) for the complete API reference including the DLQ and admin endpoints.
 
 ### Send Email (quick reference)
 ```bash

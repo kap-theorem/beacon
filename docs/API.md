@@ -1,5 +1,15 @@
 # Beacon — API Reference
 
+## Health Checks
+
+```
+GET /healthz/live   → 200 OK, body: "ok"                        (liveness — process is alive)
+GET /healthz/ready  → 200 OK, body: "ready"                     (readiness — server ready to serve)
+                    → 503 Service Unavailable, body: "not ready" (startup still in progress)
+```
+
+---
+
 ## Send an Email
 
 ```
@@ -49,15 +59,6 @@ Beacon returns immediately after the workflow is started. Delivery happens async
 | `405 Method Not Allowed` | Non-POST request |
 | `503 Service Unavailable` | Temporal server is unreachable |
 | `500 Internal Server Error` | Workflow failed to start |
-
----
-
-## Health Checks
-
-```
-GET /healthz/live   → 200 OK, body: "ok"    (liveness — process is alive)
-GET /healthz/ready  → 200 OK, body: "ready" (readiness — server is ready to serve traffic)
-```
 
 ---
 
