@@ -9,7 +9,7 @@ Beacon is an async notification service. Upstream services submit notification r
 ```mermaid
 flowchart LR
     US["Upstream Service"]
-    HTTP["HTTP Server\n(cmd/http)"]
+    HTTP["HTTP Server\n(cmd/server)"]
     TS["Temporal Server"]
     EW["Email Worker\n(cmd/email_worker)"]
     SMTP["SMTP Provider"]
@@ -20,17 +20,15 @@ flowchart LR
     EW -->|send| SMTP
 ```
 
-### HTTP Server (`cmd/http`)
+### HTTP Server (`cmd/server`)
 
 Entry point for all notification requests. It validates the request, starts a Temporal workflow, and returns `202 Accepted` immediately — the caller does not wait for delivery.
 
 Also exposes `/healthz/live` and `/healthz/ready` for health checks.
 
-### Email Worker (`cmd/email_worker`)
+### Email Worker (`cmd/email_worker`) — not yet implemented
 
-A Temporal worker that listens on the email task queue. It executes the `SendEmailWorkflow`, which calls the `SendEmailActivity` to deliver the email via SMTP.
-
-Failed activities are retried with exponential backoff before the workflow faults.
+The workflow and activity definitions live in `internal/temporal/`. A dedicated worker binary at `cmd/email_worker/` is planned but not yet present in the repository. Until it exists, Temporal workflows are enqueued but not executed.
 
 ### Config Service (`internal/config`)
 
@@ -40,8 +38,8 @@ Loads and validates SMTP provider configuration at startup. In production this i
 
 | Component | Path | Description |
 |---|---|---|
-| HTTP Server | `cmd/http/` | REST API for submitting notifications and health checks |
-| Email Worker | `cmd/email_worker/` | Temporal worker that executes email send workflows |
+| HTTP Server | `cmd/server/` | REST API for submitting notifications and health checks |
+| Email Worker | `cmd/email_worker/` | Temporal worker that executes email send workflows _(not yet implemented)_ |
 | Config Service | `internal/config/` | Loads and validates SMTP configs from Infisical (or dev env vars) |
 | Email Notifier | `internal/notifier/` | SMTP email delivery using `gopkg.in/mail.v2` |
 | Temporal Layer | `internal/temporal/` | Workflow and activity definitions |
@@ -49,10 +47,10 @@ Loads and validates SMTP provider configuration at startup. In production this i
 
 ## Request Lifecycle
 
-1. Upstream POSTs `{ to, subject, body }` to `/notify/email`
-2. HTTP server starts a Temporal workflow and returns `202` with the workflow ID
-3. Temporal durably queues the workflow on the email task queue
-4. Email worker picks up the task and calls the SMTP provider
+1. Upstream POSTs `{ to, subject, body, client_hint? }` to `/notify/email`
+2. HTTP server starts a Temporal workflow and returns `202` with the workflow ID, run ID, and selected provider
+3. Temporal durably queues the workflow on the per-provider task queue
+4. Email worker picks up the task and calls the SMTP provider _(worker not yet implemented — see above)_
 5. On transient failure, Temporal retries automatically (3 attempts, exponential backoff)
 
 ## Tech Stack

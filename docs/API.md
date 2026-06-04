@@ -22,13 +22,19 @@ Content-Type: application/json
 | `to` | Yes | Recipient email address |
 | `subject` | Yes | Email subject |
 | `body` | No | Email body (plain text) |
+| `client_hint` | No | Provider category hint. When set, Beacon routes to the SMTP provider registered under that category name. Omit to use the default provider. |
 
 **Response — 202 Accepted:**
 
 ```json
 {
-  "workflow_id": "email-workflow-recipient@example.com-1714567890123456789",
-  "workflow_run_id": "abc123-..."
+  "success": true,
+  "message": "email notification triggered",
+  "data": {
+    "workflow_id": "email-workflow-recipient@example.com-1714567890123456789",
+    "workflow_run_id": "abc123-...",
+    "provider": "sendgrid-transactional"
+  }
 }
 ```
 
@@ -107,7 +113,41 @@ response = requests.post(
 
 if response.status_code == 202:
     data = response.json()
-    print("workflow started:", data["workflow_id"])
+    print("workflow started:", data["data"]["workflow_id"])
 ```
 
 The `202 Accepted` response means the workflow was enqueued. Email delivery is asynchronous — the upstream service does not need to wait or poll.
+
+---
+
+## DLQ Endpoints
+
+These endpoints are always registered. When the Temporal server is unreachable, they return `503 Service Unavailable`.
+
+### List failed workflows
+
+```
+GET /dlq/failed
+```
+
+Returns workflows in a terminal failure state.
+
+### Replay a failed workflow
+
+```
+POST /dlq/replay/{workflow_id}
+```
+
+Re-enqueues a failed workflow for retry.
+
+---
+
+## Admin Endpoints
+
+### Refresh config
+
+```
+POST /admin/config/refresh
+```
+
+Triggers an immediate reload of SMTP provider configuration from Infisical. Requires an `Authorization: Bearer <token>` header where the token matches the `ADMIN_TOKEN` environment variable. Returns `403 Forbidden` if `ADMIN_TOKEN` is unset or the token does not match.

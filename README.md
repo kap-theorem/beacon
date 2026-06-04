@@ -26,11 +26,13 @@ Beacon is an async notification service built in Go. It currently supports email
    # Set DEV_MODE=true and fill in DEV_SMTP_* vars
    ```
 
-3. Run the services:
+3. Run the HTTP server:
    ```bash
-   make run-http &
-   make run-email-worker
+   make run-server
    ```
+
+   > **Note:** The email worker binary (`cmd/email_worker`) is not yet implemented.
+   > Until it is available, Temporal workflows will be enqueued but not executed.
 
 4. Send a test email:
    ```bash
@@ -38,8 +40,6 @@ Beacon is an async notification service built in Go. It currently supports email
      -H "Content-Type: application/json" \
      -d '{"to":"you@example.com","subject":"Test","body":"Hello!"}'
    ```
-
-Both the HTTP server and the email worker must be running for delivery to work.
 
 ---
 

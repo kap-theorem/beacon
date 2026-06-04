@@ -21,9 +21,11 @@
 
 3. Build and run:
    ```bash
-   make run-http &
-   make run-email-worker
+   make run-server
    ```
+
+   > **Note:** The email worker (`cmd/email_worker`) is not yet implemented.
+   > `make run-email-worker` will fail until that binary is added to the repo.
 
 4. Send a test email:
    ```bash
@@ -35,19 +37,15 @@
 ## Building and Running
 
 ```bash
-# Build both binaries into bin/
+# Build (note: will fail until cmd/email_worker is added)
 make build
 
 # Build individually
-make build-http
-make build-email-worker
+make build-server
 
 # Run
-make run-http          # starts HTTP server
-make run-email-worker  # starts Temporal worker
+make run-server   # starts HTTP server
 
 # Clean
 make clean
 ```
-
-Both the HTTP server and the email worker must be running for email delivery to work.

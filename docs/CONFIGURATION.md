@@ -7,7 +7,8 @@ Beacon is configured via environment variables. Copy `.env.example` to `.env` an
 | Variable | Default | Description |
 |---|---|---|
 | `SERVER_PORT` | `6969` | HTTP server port |
-| `EMAIL_NOTIFIER_TASK_QUEUE` | `email-task-queue` | Temporal task queue name (must match between server and worker) |
+| `CONFIG_POLL_INTERVAL` | `300` | Seconds between automatic Infisical config refreshes |
+| `ADMIN_TOKEN` | — | Bearer token required for `POST /admin/config/refresh`. When unset, the endpoint returns `403 Forbidden` for all requests. |
 
 ## Temporal
 
