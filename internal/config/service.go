@@ -3,14 +3,20 @@ package config
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 )
+
+// ErrDevModeSkip is returned by RefreshConfig when running in DEV_MODE, signalling
+// that the refresh was intentionally skipped rather than silently succeeding.
+var ErrDevModeSkip = errors.New("config refresh skipped: DEV_MODE is active")
 
 type ConfigService struct {
 	infisicalAddr string
@@ -302,14 +308,15 @@ func (cs *ConfigService) GetConfig() *ConfigBundle {
 		Timestamp: cs.current.Timestamp,
 	}
 
-	for name, cfg := range cs.current.SMTP {
-		bundle.SMTP[name] = cfg
-	}
+	maps.Copy(bundle.SMTP, cs.current.SMTP)
 
 	return bundle
 }
 
 func (cs *ConfigService) RefreshConfig(ctx context.Context) error {
+	if cs.authMethod == "dev" {
+		return ErrDevModeSkip
+	}
 	bundle, err := cs.LoadWithRetry(ctx)
 	if err != nil {
 		cs.mu.RLock()

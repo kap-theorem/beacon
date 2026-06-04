@@ -5,8 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
-	"sync/atomic"
 	"strings"
+	"sync/atomic"
 )
 
 var (
@@ -16,12 +16,12 @@ var (
 	badJson = flag.Bool("bad-json", false, "Return invalid JSON")
 )
 
-var requestCount int64
+var requestCount atomic.Int64
 
 func main() {
 	flag.Parse()
 
-	http.HandleFunc("/api/v1/secrets", handleSecrets)
+	http.HandleFunc("/api/v4/secrets", handleSecrets)
 	fmt.Printf("Mock Infisical server listening on :%s\n", *port)
 	fmt.Printf("Config: fail-count=%d, slow-ms=%d, bad-json=%v\n", *fail, *slowMs, *badJson)
 
@@ -31,7 +31,7 @@ func main() {
 }
 
 func handleSecrets(w http.ResponseWriter, r *http.Request) {
-	count := atomic.AddInt64(&requestCount, 1)
+	count := requestCount.Add(1)
 	fmt.Printf("[%d] %s %s\n", count, r.Method, r.RequestURI)
 
 	if int(count) <= *fail {
@@ -49,7 +49,7 @@ func handleSecrets(w http.ResponseWriter, r *http.Request) {
 	secrets := []map[string]string{
 		{
 			"secretKey": "sendgrid",
-			"secretValue": mustMarshal(map[string]interface{}{
+			"secretValue": mustMarshal(map[string]any{
 				"name":       "sendgrid",
 				"provider":   "sendgrid",
 				"host":       "smtp.sendgrid.net",
@@ -57,7 +57,7 @@ func handleSecrets(w http.ResponseWriter, r *http.Request) {
 				"username":   "apikey",
 				"password":   "SG.test-key-12345",
 				"auth_type":  "PLAIN",
-				"tls":        map[string]interface{}{"enabled": true, "server_name": "smtp.sendgrid.net"},
+				"tls":        map[string]any{"enabled": true, "server_name": "smtp.sendgrid.net"},
 				"timeout":    "30s",
 				"max_retries": 3,
 				"max_per_hour": 0,
@@ -65,7 +65,7 @@ func handleSecrets(w http.ResponseWriter, r *http.Request) {
 		},
 		{
 			"secretKey": "mailgun",
-			"secretValue": mustMarshal(map[string]interface{}{
+			"secretValue": mustMarshal(map[string]any{
 				"name":       "mailgun",
 				"provider":   "mailgun",
 				"host":       "smtp.mailgun.org",
@@ -73,14 +73,14 @@ func handleSecrets(w http.ResponseWriter, r *http.Request) {
 				"username":   "postmaster@mg.example.com",
 				"password":   "mg-test-key",
 				"auth_type":  "PLAIN",
-				"tls":        map[string]interface{}{"enabled": true, "server_name": "smtp.mailgun.org"},
+				"tls":        map[string]any{"enabled": true, "server_name": "smtp.mailgun.org"},
 				"timeout":    "25s",
 				"max_retries": 2,
 			}),
 		},
 		{
 			"secretKey": "aws-ses",
-			"secretValue": mustMarshal(map[string]interface{}{
+			"secretValue": mustMarshal(map[string]any{
 				"name":       "ses",
 				"provider":   "aws-ses",
 				"host":       "email-smtp.us-east-1.amazonaws.com",
@@ -88,12 +88,12 @@ func handleSecrets(w http.ResponseWriter, r *http.Request) {
 				"username":   "AKIAIOSFODNN7EXAMPLE",
 				"password":   "test-smtp-password",
 				"auth_type":  "LOGIN",
-				"tls":        map[string]interface{}{"enabled": true, "server_name": "email-smtp.us-east-1.amazonaws.com"},
+				"tls":        map[string]any{"enabled": true, "server_name": "email-smtp.us-east-1.amazonaws.com"},
 			}),
 		},
 	}
 
-	response := map[string]interface{}{
+	response := map[string]any{
 		"secrets": secrets,
 	}
 
@@ -102,7 +102,7 @@ func handleSecrets(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[%d] Response sent (secrets: %d)\n", count, len(secrets))
 }
 
-func mustMarshal(v interface{}) string {
+func mustMarshal(v any) string {
 	data, err := json.Marshal(v)
 	if err != nil {
 		panic(err)

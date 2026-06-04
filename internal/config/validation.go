@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -41,11 +42,12 @@ func (vr *ValidationResult) Error() string {
 	if vr.Valid {
 		return ""
 	}
-	msg := fmt.Sprintf("validation errors: ")
+	var sb strings.Builder
+	sb.WriteString("validation errors: ")
 	for _, err := range vr.Errors {
-		msg += fmt.Sprintf("[%s: %s] ", err.Field, err.Reason)
+		fmt.Fprintf(&sb, "[%s: %s] ", err.Field, err.Reason)
 	}
-	return msg
+	return sb.String()
 }
 
 // ValidationResult implements the error interface
@@ -169,9 +171,3 @@ func isValidHost(host string) bool {
 	return dnsRegex.MatchString(host) || host == "localhost"
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
