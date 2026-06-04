@@ -6,10 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
+	temporalerr "go.temporal.io/sdk/temporal"
 )
 
 // ErrNotTerminalState is returned when a replay is requested for a workflow that is still running.
@@ -17,6 +17,9 @@ var ErrNotTerminalState = errors.New("workflow is not in a terminal state")
 
 // ErrWorkflowNotFound is returned when the workflow ID does not exist in Temporal.
 var ErrWorkflowNotFound = errors.New("workflow not found")
+
+// ErrReplayAlreadyRunning is returned when a replay workflow for the given ID is already in progress.
+var ErrReplayAlreadyRunning = errors.New("replay already in progress for this workflow")
 
 // replayWorkflow fetches the original workflow input and dispatches a new SendEmailWorkflow execution.
 func replayWorkflow(ctx context.Context, tc client.Client, workflowID string) (*ReplayResult, error) {
@@ -48,13 +51,18 @@ func replayWorkflow(ctx context.Context, tc client.Client, workflowID string) (*
 
 	provider := parseProviderFromTaskQueue(taskQueue)
 	replayQueue := notifier.TaskQueueFor(provider)
-	newWorkflowID := fmt.Sprintf("replay-%s-%d", workflowID, time.Now().UnixNano())
+	// Use a deterministic replay ID so Temporal itself rejects duplicate starts.
+	newWorkflowID := fmt.Sprintf("replay-%s", workflowID)
 
 	run, err := tc.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
-		ID:        newWorkflowID,
-		TaskQueue: replayQueue,
+		ID:                newWorkflowID,
+		TaskQueue:         replayQueue,
+		WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
 	}, temporal.SendEmailWorkflow, details.msg)
 	if err != nil {
+		if temporalerr.IsWorkflowExecutionAlreadyStartedError(err) {
+			return nil, ErrReplayAlreadyRunning
+		}
 		return nil, fmt.Errorf("dispatch replay workflow: %w", err)
 	}
 

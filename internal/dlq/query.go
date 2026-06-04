@@ -198,5 +198,5 @@ func statusMatches(status, filterStatus string) bool {
 	if filterStatus == "" {
 		return status == "Failed" || status == "TimedOut" || status == "Canceled"
 	}
-	return status == filterStatus
+	return strings.EqualFold(status, filterStatus)
 }
