@@ -9,6 +9,7 @@ Beacon is an async notification service built in Go. It currently supports email
 - [Architecture Overview](docs/ARCHITECTURE.md)
 - [Configuration Reference](docs/CONFIGURATION.md)
 - [API Reference](docs/API.md)
+- [Usage Examples](docs/EXAMPLES.md)
 - [Development Guide](docs/DEVELOPMENT.md)
 
 ---

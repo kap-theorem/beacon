@@ -191,6 +191,21 @@ components:
           type: string
           example: "sendgrid"
 
+    AdminRefreshData:
+      type: object
+      properties:
+        revision:
+          type: integer
+          format: int64
+          description: Incremented revision number from Infisical.
+          example: 42
+        providers:
+          type: array
+          items:
+            type: string
+          description: Currently loaded provider names after reload.
+          example: ["sendgrid", "mailgun"]
+
     AdminRefreshResponse:
       type: object
       properties:
@@ -201,19 +216,7 @@ components:
           type: string
           example: "config refreshed"
         data:
-          type: object
-          properties:
-            revision:
-              type: integer
-              format: int64
-              description: Incremented revision number from Infisical.
-              example: 42
-            providers:
-              type: array
-              items:
-                type: string
-              description: Currently loaded provider names after reload.
-              example: ["sendgrid", "mailgun"]
+          $ref: "#/components/schemas/AdminRefreshData"
 
     # ── Error response ───────────────────────────
     ErrorResponse:
@@ -291,6 +294,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Temporal workflow dispatch failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                error: "failed to trigger email notification"
         "503":
           description: Temporal service unavailable.
           content:
