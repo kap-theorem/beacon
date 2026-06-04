@@ -1,0 +1,548 @@
+openapi: "3.0.3"
+
+info:
+  title: Beacon Notification Service API
+  description: |
+    HTTP API for the Beacon asynchronous email notification service.
+
+    Beacon dispatches email via Temporal workflows. Each request is acknowledged
+    immediately (HTTP 202) and executed asynchronously — callers use the returned
+    `workflow_id` to track delivery.
+
+    **Authentication**: Most endpoints are unauthenticated (internal service-to-service
+    use). The `/admin/*` endpoints require a Bearer token that matches the `ADMIN_TOKEN`
+    environment variable.
+  version: "1.0.0"
+  contact:
+    name: Beacon maintainers
+
+servers:
+  - url: http://localhost:6969
+    description: Local development server (default port)
+
+tags:
+  - name: Email
+    description: Send email notifications
+  - name: DLQ
+    description: Dead-letter-queue — query and replay failed workflow executions
+  - name: Admin
+    description: Privileged configuration management (requires Bearer token)
+  - name: Health
+    description: Liveness and readiness probes
+
+# ─────────────────────────────────────────────
+# Security Schemes
+# ─────────────────────────────────────────────
+components:
+  securitySchemes:
+    AdminBearerToken:
+      type: http
+      scheme: bearer
+      description: |
+        Value must match the `ADMIN_TOKEN` environment variable set on the server.
+        If `ADMIN_TOKEN` is unset the admin endpoint returns HTTP 403 (disabled).
+
+  # ─────────────────────────────────────────────
+  # Reusable Schemas
+  # ─────────────────────────────────────────────
+  schemas:
+
+    # ── Request bodies ──────────────────────────
+    EmailRequest:
+      type: object
+      required:
+        - to
+        - subject
+      properties:
+        to:
+          type: string
+          format: email
+          description: Recipient email address.
+          example: "user@example.com"
+        subject:
+          type: string
+          description: Email subject line.
+          example: "Your order has shipped"
+        body:
+          type: string
+          description: Plain-text email body. May be empty.
+          example: "Hi! Your order #1234 is on its way."
+        client_hint:
+          type: string
+          description: |
+            Optional routing hint. Maps to a provider category or exact provider name.
+            When omitted the default provider is used.
+          example: "transactional"
+
+    # ── Success response wrappers ────────────────
+    EmailResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "email notification triggered"
+        data:
+          $ref: "#/components/schemas/EmailData"
+
+    EmailData:
+      type: object
+      properties:
+        workflow_id:
+          type: string
+          description: Temporal workflow ID for the dispatched execution.
+          example: "email-workflow-user@example.com-1748900000000000000"
+        workflow_run_id:
+          type: string
+          description: Temporal run ID.
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        provider:
+          type: string
+          description: Email provider selected by the routing engine.
+          example: "sendgrid"
+
+    DLQQueryResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: ""
+        data:
+          type: object
+          properties:
+            failures:
+              type: array
+              items:
+                $ref: "#/components/schemas/FailedNotification"
+            count:
+              type: integer
+              example: 3
+
+    FailedNotification:
+      type: object
+      description: A closed Temporal workflow execution that ended in a terminal failure state.
+      properties:
+        workflow_id:
+          type: string
+          example: "email-workflow-user@example.com-1748900000000000000"
+        run_id:
+          type: string
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        recipient:
+          type: string
+          format: email
+          example: "user@example.com"
+        subject:
+          type: string
+          example: "Your order has shipped"
+        provider:
+          type: string
+          example: "sendgrid"
+        failure_reason:
+          type: string
+          example: "SMTP connection refused"
+        retry_count:
+          type: integer
+          format: int32
+          example: 3
+        last_attempt_at:
+          type: string
+          format: date-time
+          example: "2025-06-01T12:34:56Z"
+        closed_at:
+          type: string
+          format: date-time
+          example: "2025-06-01T12:35:10Z"
+        status:
+          type: string
+          enum: [Failed, TimedOut, Canceled]
+          example: "Failed"
+
+    ReplayResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "workflow replay dispatched"
+        data:
+          $ref: "#/components/schemas/ReplayResult"
+
+    ReplayResult:
+      type: object
+      properties:
+        new_workflow_id:
+          type: string
+          example: "replay-email-workflow-user@example.com-1748900000000000000-1748900001000000000"
+        new_run_id:
+          type: string
+          example: "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+        original_workflow_id:
+          type: string
+          example: "email-workflow-user@example.com-1748900000000000000"
+        provider:
+          type: string
+          example: "sendgrid"
+
+    AdminRefreshResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "config refreshed"
+        data:
+          type: object
+          properties:
+            revision:
+              type: integer
+              format: int64
+              description: Incremented revision number from Infisical.
+              example: 42
+            providers:
+              type: array
+              items:
+                type: string
+              description: Currently loaded provider names after reload.
+              example: ["sendgrid", "mailgun"]
+
+    # ── Error response ───────────────────────────
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          description: Human-readable error message.
+          example: "missing required fields: to, subject"
+
+# ─────────────────────────────────────────────
+# Paths
+# ─────────────────────────────────────────────
+paths:
+
+  # ── Email ────────────────────────────────────
+  /notify/email:
+    post:
+      tags: [Email]
+      summary: Send an email notification
+      description: |
+        Dispatches an asynchronous email via a Temporal workflow.
+
+        The endpoint returns HTTP 202 immediately. Delivery is handled by a
+        background worker. Use the returned `workflow_id` to poll Temporal for
+        the execution result.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailRequest"
+            examples:
+              minimal:
+                summary: Minimal request (no routing hint)
+                value:
+                  to: "user@example.com"
+                  subject: "Hello"
+                  body: "World"
+              with_hint:
+                summary: With client_hint for explicit provider routing
+                value:
+                  to: "ops@example.com"
+                  subject: "Alert"
+                  body: "Disk usage at 95%"
+                  client_hint: "transactional"
+      responses:
+        "202":
+          description: Workflow dispatched successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmailResponse"
+        "400":
+          description: Invalid request body or routing error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                missing_fields:
+                  value:
+                    success: false
+                    error: "missing required fields: to, subject"
+                routing_error:
+                  value:
+                    success: false
+                    error: "routing error: no provider found for hint \"unknown\""
+        "405":
+          description: Method not allowed (only POST is accepted).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Temporal service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                error: "temporal service not available"
+
+  # ── DLQ ─────────────────────────────────────
+  /dlq/failed:
+    get:
+      tags: [DLQ]
+      summary: List failed workflow executions
+      description: |
+        Returns closed Temporal workflow executions that ended in a terminal failure
+        state (Failed, TimedOut, or Canceled).
+
+        All query parameters are optional. When `limit` is omitted the server
+        defaults to 20 and caps at 100.
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [Failed, TimedOut, Canceled]
+          description: Filter by terminal status. Omit to return all three statuses.
+          example: "Failed"
+        - name: provider
+          in: query
+          schema:
+            type: string
+          description: Filter by provider name (matches the Temporal task-queue provider).
+          example: "sendgrid"
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Inclusive start of the close-time window (RFC 3339).
+          example: "2025-06-01T00:00:00Z"
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Inclusive end of the close-time window (RFC 3339).
+          example: "2025-06-30T23:59:59Z"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Maximum number of results to return.
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Pagination offset.
+      responses:
+        "200":
+          description: Query successful.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DLQQueryResponse"
+        "405":
+          description: Method not allowed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Temporal query failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                error: "failed to query workflow failures"
+        "503":
+          description: Temporal service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /dlq/replay/{workflowID}:
+    post:
+      tags: [DLQ]
+      summary: Replay a failed workflow
+      description: |
+        Reads the original `EmailMessage` input from a failed workflow's Temporal history
+        and dispatches a **new** workflow execution with a fresh ID.
+
+        The original execution is preserved in Temporal history for audit purposes.
+        Only workflows in a terminal state (Failed, TimedOut, Canceled) can be replayed.
+      parameters:
+        - name: workflowID
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The Temporal workflow ID of the failed execution to replay.
+          example: "email-workflow-user@example.com-1748900000000000000"
+      responses:
+        "202":
+          description: Replay workflow dispatched.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayResponse"
+        "400":
+          description: Workflow ID missing or malformed path.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                error: "workflow ID is required"
+        "404":
+          description: Workflow not found in Temporal.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                error: "workflow not found: email-workflow-user@example.com-1748900000000000000"
+        "405":
+          description: Method not allowed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Workflow is still running — replay not allowed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                error: "workflow is still running; replay not allowed"
+        "500":
+          description: Replay dispatch failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Temporal service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Admin ────────────────────────────────────
+  /admin/config/refresh:
+    post:
+      tags: [Admin]
+      summary: Force a configuration reload from Infisical
+      description: |
+        Triggers an immediate re-fetch of all SMTP client configurations from Infisical
+        and reloads the in-memory `EmailClientRegistry`.
+
+        Requires a Bearer token that matches the `ADMIN_TOKEN` environment variable.
+        If `ADMIN_TOKEN` is unset on the server this endpoint returns HTTP 403.
+
+        The background `ConfigWatcher` also polls automatically (default every 300 s,
+        configurable via `CONFIG_POLL_INTERVAL`). This endpoint is for on-demand refresh.
+      security:
+        - AdminBearerToken: []
+      responses:
+        "200":
+          description: Config reloaded successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminRefreshResponse"
+        "401":
+          description: Authorization header missing or does not match ADMIN_TOKEN.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                error: "unauthorized"
+        "403":
+          description: Admin endpoint disabled (ADMIN_TOKEN not set on server).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                error: "admin endpoint disabled"
+        "405":
+          description: Method not allowed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Config refresh or registry reload failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Health ───────────────────────────────────
+  /healthz/live:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      description: Returns HTTP 200 `ok` if the process is alive. Never returns 5xx.
+      responses:
+        "200":
+          description: Process is alive.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "ok"
+
+  /healthz/ready:
+    get:
+      tags: [Health]
+      summary: Readiness probe
+      description: |
+        Returns HTTP 200 `ready` when the server has finished startup
+        (config loaded, registry built). Returns HTTP 503 `not ready` otherwise.
+      responses:
+        "200":
+          description: Server is ready to handle traffic.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "ready"
+        "503":
+          description: Server is not yet ready.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "not ready"
