@@ -57,6 +57,8 @@ For a fully local smoke test (no real Infisical instance needed), use the mock t
 bash scripts/test-local.sh
 ```
 
+For all available make targets, see the [Development Guide](docs/DEVELOPMENT.md).
+
 ---
 
 ## Prerequisites

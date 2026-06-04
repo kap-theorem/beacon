@@ -9,7 +9,7 @@ Beacon is an async notification service. Upstream services submit notification r
 ```mermaid
 flowchart LR
     US["Upstream Service"]
-    HTTP["HTTP Server\n(cmd/http)"]
+    HTTP["HTTP Server\n(cmd/server)"]
     TS["Temporal Server"]
     EW["Email Worker\n(cmd/email_worker)"]
     SMTP["SMTP Provider"]
@@ -20,7 +20,7 @@ flowchart LR
     EW -->|send| SMTP
 ```
 
-### HTTP Server (`cmd/http`)
+### HTTP Server (`cmd/server`)
 
 Entry point for all notification requests. It validates the request, starts a Temporal workflow, and returns `202 Accepted` immediately — the caller does not wait for delivery.
 
@@ -40,7 +40,7 @@ Loads and validates SMTP provider configuration at startup. In production this i
 
 | Component | Path | Description |
 |---|---|---|
-| HTTP Server | `cmd/http/` | REST API for submitting notifications and health checks |
+| HTTP Server | `cmd/server/` | REST API for submitting notifications and health checks |
 | Email Worker | `cmd/email_worker/` | Temporal worker that executes email send workflows |
 | Config Service | `internal/config/` | Loads and validates SMTP configs from Infisical (or dev env vars) |
 | Email Notifier | `internal/notifier/` | SMTP email delivery using `gopkg.in/mail.v2` |

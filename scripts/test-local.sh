@@ -33,7 +33,7 @@ echo -e "${YELLOW}Building mock Infisical server...${NC}"
 go build -o /tmp/mock-infisical ./scripts/mock-infisical.go
 
 echo -e "${YELLOW}Building HTTP server...${NC}"
-go build -o /tmp/http-server ./cmd/http
+go build -o /tmp/http-server ./cmd/server
 
 # Start mock Infisical
 echo -e "${YELLOW}Starting mock Infisical server on :8000...${NC}"
