@@ -28,12 +28,12 @@ type ConfigService struct {
 	authMethod    string // "client-secret", "api-key", or "token"
 	httpClient    *http.Client
 
-	mu              sync.RWMutex
-	current         *ConfigBundle
-	previous        *ConfigBundle
-	revision        int64
-	accessToken     string
-	accessTokenExp  time.Time
+	mu             sync.RWMutex
+	current        *ConfigBundle
+	previous       *ConfigBundle
+	revision       int64
+	accessToken    string
+	accessTokenExp time.Time
 
 	logger *slog.Logger
 }
@@ -250,9 +250,9 @@ func (cs *ConfigService) fetchConfigs(ctx context.Context, basePath string) (map
 
 	var result struct {
 		Secrets []struct {
-			Key       string `json:"secretKey"`
-			Value     string `json:"secretValue"`
-			Comment   string `json:"secretComment"`
+			Key     string `json:"secretKey"`
+			Value   string `json:"secretValue"`
+			Comment string `json:"secretComment"`
 		} `json:"secrets"`
 	}
 

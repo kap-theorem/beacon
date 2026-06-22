@@ -55,8 +55,8 @@ func replayWorkflow(ctx context.Context, tc client.Client, workflowID string) (*
 	newWorkflowID := fmt.Sprintf("replay-%s", workflowID)
 
 	run, err := tc.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
-		ID:                newWorkflowID,
-		TaskQueue:         replayQueue,
+		ID:                    newWorkflowID,
+		TaskQueue:             replayQueue,
 		WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
 	}, temporal.SendEmailWorkflow, details.msg)
 	if err != nil {
