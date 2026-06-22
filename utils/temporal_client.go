@@ -5,8 +5,12 @@ import (
 	"go.temporal.io/sdk/contrib/envconfig"
 )
 
-// NewTemporalClient creates a new Temporal client connection.
-// The caller is responsible for calling Close() on the returned client.
+// NewTemporalClient creates a new Temporal client connection from environment
+// configuration. The caller is responsible for calling Close() on the result.
 func NewTemporalClient() (client.Client, error) {
-	return client.Dial(envconfig.MustLoadDefaultClientOptions())
+	opts, err := envconfig.LoadDefaultClientOptions()
+	if err != nil {
+		return nil, err
+	}
+	return client.Dial(opts)
 }
