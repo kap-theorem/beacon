@@ -6,8 +6,8 @@ import (
 	"beacon/internal/models"
 	"beacon/internal/notifier"
 	"beacon/internal/temporal"
+	"beacon/utils"
 	"context"
-	"log"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -16,8 +16,6 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/contrib/envconfig"
 	"go.temporal.io/sdk/worker"
 )
 
@@ -61,9 +59,10 @@ func main() {
 		return emailSvc
 	}
 
-	c, err := client.Dial(envconfig.MustLoadDefaultClientOptions())
+	c, err := utils.NewTemporalClient()
 	if err != nil {
-		log.Fatalln("unable to create Temporal client:", err)
+		logger.Error("unable to create Temporal client", slog.Any("error", err))
+		os.Exit(1)
 	}
 	defer c.Close()
 

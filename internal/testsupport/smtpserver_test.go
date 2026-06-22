@@ -1,6 +1,7 @@
 package testsupport
 
 import (
+	"strings"
 	"testing"
 
 	gomail "gopkg.in/mail.v2"
@@ -27,17 +28,7 @@ func TestMockSMTPServer_CapturesMessage(t *testing.T) {
 	if msgs[0].To[0] != "alice@example.com" {
 		t.Errorf("recipient: got %q", msgs[0].To[0])
 	}
-	if !contains(msgs[0].Data, "Subject: hello") {
+	if !strings.Contains(msgs[0].Data, "Subject: hello") {
 		t.Errorf("subject not found in data: %q", msgs[0].Data)
 	}
-}
-
-func contains(s, sub string) bool { return len(s) >= len(sub) && (indexOf(s, sub) >= 0) }
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }
