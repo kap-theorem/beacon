@@ -40,3 +40,7 @@ server
 .claude/
 .aidlc-rule-details/
 aidlc-docs/
+
+coverage.out
+coverage.html
+covdata/

@@ -25,3 +25,16 @@ run-server: build-server
 
 clean:
 	rm -rf $(BINARY_DIR)
+
+.PHONY: test cover cover-html
+
+test:
+	go test ./...
+
+cover:
+	./scripts/check-coverage.sh
+
+cover-html:
+	go test -covermode=set -coverprofile=coverage.out ./internal/... ./utils
+	go tool cover -html=coverage.out -o coverage.html
+	@echo "wrote coverage.html"
