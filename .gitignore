@@ -31,10 +31,10 @@ go.work.sum
 # .idea/
 # .vscode/
 
-# Binaries
+# Binaries (root-level build outputs only; anchored so they don't shadow cmd/* source dirs)
 bin/
-email_worker
-server
+/email_worker
+/server
 
 # Claude
 .claude/
