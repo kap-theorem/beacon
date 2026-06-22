@@ -3,6 +3,7 @@ package api
 import (
 	"beacon/internal/dlq"
 	"beacon/utils"
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -11,13 +12,19 @@ import (
 	"time"
 )
 
+// DLQQuerier is the behavior the handler needs; *dlq.DLQService satisfies it.
+type DLQQuerier interface {
+	QueryFailures(ctx context.Context, filter dlq.FailureFilter) ([]*dlq.FailedNotification, error)
+	ReplayWorkflow(ctx context.Context, workflowID string) (*dlq.ReplayResult, error)
+}
+
 // DLQHandler exposes HTTP endpoints for querying and replaying failed email workflows.
 type DLQHandler struct {
-	Service *dlq.DLQService
+	Service DLQQuerier
 	logger  *slog.Logger
 }
 
-func NewDLQHandler(service *dlq.DLQService, logger *slog.Logger) *DLQHandler {
+func NewDLQHandler(service DLQQuerier, logger *slog.Logger) *DLQHandler {
 	return &DLQHandler{Service: service, logger: logger}
 }
 
