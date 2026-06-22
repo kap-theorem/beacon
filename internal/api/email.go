@@ -5,6 +5,7 @@ import (
 	"beacon/internal/notifier"
 	"beacon/internal/temporal"
 	"beacon/utils"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -16,9 +17,15 @@ import (
 	"go.temporal.io/sdk/client"
 )
 
+// WorkflowStarter is the slice of the Temporal client the email handler needs.
+// *client.Client (the real Temporal client) satisfies this automatically.
+type WorkflowStarter interface {
+	ExecuteWorkflow(ctx context.Context, options client.StartWorkflowOptions, workflow interface{}, args ...interface{}) (client.WorkflowRun, error)
+}
+
 // EmailHandler handles email notification requests.
 type EmailHandler struct {
-	TemporalClient client.Client
+	TemporalClient WorkflowStarter
 	Registry       *notifier.EmailClientRegistry
 }
 
