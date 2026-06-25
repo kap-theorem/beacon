@@ -6,10 +6,16 @@ Beacon is an async notification service built in Go. It currently supports email
 
 ## Documentation
 
-- [Architecture Overview](docs/ARCHITECTURE.md)
-- [Configuration Reference](docs/CONFIGURATION.md)
-- [API Reference](docs/API.md)
-- [Development Guide](docs/DEVELOPMENT.md)
+| Document | Description |
+|---|---|
+| [API Reference](docs/API.md) | All endpoints with request/response shapes and status codes |
+| [Architecture Overview](docs/ARCHITECTURE.md) | Component diagram, request lifecycle, tech stack |
+| [Configuration Reference](docs/CONFIGURATION.md) | Every environment variable with defaults and descriptions |
+| [Development Guide](docs/DEVELOPMENT.md) | Local setup, build targets, testing workflow |
+| [Deployment Guide](docs/DEPLOYMENT.md) | Docker Compose and systemd deployment instructions |
+| [Integration Guide](docs/INTEGRATION.md) | How upstream services call Beacon |
+| [Feature Readiness Matrix](docs/FEATURE_READINESS.md) | Verified endpoint I/O and doc-discrepancy findings |
+| [Future Scope](docs/future-scope.md) | Planned features and known limitations |
 
 ---
 
@@ -28,7 +34,7 @@ Beacon is an async notification service built in Go. It currently supports email
 
 3. Run the services:
    ```bash
-   make run-http &
+   make run-server &
    make run-email-worker
    ```
 
@@ -40,6 +46,24 @@ Beacon is an async notification service built in Go. It currently supports email
    ```
 
 Both the HTTP server and the email worker must be running for delivery to work.
+
+---
+
+## Testing
+
+```bash
+# Unit tests
+make test
+
+# Coverage gate (requires ≥90% across internal/ and utils)
+make cover
+
+# HTML coverage report written to coverage.html
+make cover-html
+
+# Integration tests (require a reachable Temporal at localhost:7233)
+make test-integration
+```
 
 ---
 
