@@ -319,17 +319,14 @@ func (cs *ConfigService) RefreshConfig(ctx context.Context) error {
 	}
 	bundle, err := cs.LoadWithRetry(ctx)
 	if err != nil {
-		cs.mu.RLock()
-		defer cs.mu.RUnlock()
+		cs.mu.Lock()
 		if cs.previous != nil {
 			cs.logger.Warn("refresh failed, reverting to previous config",
 				slog.Any("error", err),
 			)
-			cs.mu.RUnlock()
-			cs.mu.Lock()
 			cs.current = cs.previous
-			cs.mu.Unlock()
 		}
+		cs.mu.Unlock()
 		return err
 	}
 
@@ -363,6 +360,6 @@ func (e *TransientError) Error() string {
 }
 
 func isTransientError(err error) bool {
-	_, ok := err.(*TransientError)
-	return ok
+	var te *TransientError
+	return errors.As(err, &te)
 }
