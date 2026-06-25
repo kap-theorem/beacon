@@ -1,0 +1,24 @@
+[Unit]
+Description=Beacon HTTP Server
+Documentation=https://github.com/your-org/beacon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/beacon/server.env
+ExecStart=/usr/local/bin/server
+Restart=always
+RestartSec=5s
+# Run as a dedicated non-root user for least-privilege operation.
+# Create with: useradd --system --no-create-home beacon
+User=beacon
+Group=beacon
+# Harden the service: no new privileges, read-only filesystem where possible.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
