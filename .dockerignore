@@ -1,0 +1,7 @@
+bin/
+covdata/
+*.out
+.git
+aidlc-docs/
+docs/
+.worktrees/
