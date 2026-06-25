@@ -38,3 +38,7 @@ cover-html:
 	go test -covermode=set -coverprofile=coverage.out ./internal/... ./utils
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "wrote coverage.html"
+
+.PHONY: test-integration
+test-integration:
+	go test -tags=integration ./internal/integration/...
