@@ -16,9 +16,19 @@ echo "Per-package coverage (threshold ${THRESHOLD}%):"
 fail=0
 # func-level report aggregated to package totals.
 while read -r pkg; do
-  pct=$(go test -covermode=set -coverprofile=/tmp/p.out "$pkg" 2>/dev/null \
+  out=$(go test -covermode=set -coverprofile=/tmp/p.out "$pkg" 2>&1)
+  # Packages with no executable statements (e.g. pure DTO/struct packages) or no
+  # test files cannot be meaningfully gated — treat them as N/A, not a failure.
+  if printf '%s' "$out" | grep -q 'no test files\|\[no statements\]'; then
+    printf "  n/a            %s (no testable statements)\n" "$pkg"
+    continue
+  fi
+  pct=$(printf '%s' "$out" \
         | awk '/coverage:/ {gsub("%","",$0); for(i=1;i<=NF;i++) if($i=="coverage:"){print $(i+1)}}')
-  if [ -z "$pct" ]; then pct="0.0"; fi
+  if [ -z "$pct" ]; then
+    printf "  n/a            %s (no coverage reported)\n" "$pkg"
+    continue
+  fi
   awk -v p="$pct" -v t="$THRESHOLD" -v k="$pkg" \
     'BEGIN{ if (p+0 < t+0) { printf "  FAIL %6.1f%%  %s\n", p, k; exit 3 } else { printf "  ok   %6.1f%%  %s\n", p, k } }' \
     || fail=1

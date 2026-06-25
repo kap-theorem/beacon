@@ -44,3 +44,6 @@ aidlc-docs/
 coverage.out
 coverage.html
 covdata/
+
+# Local deployment env files (copy from *.env.example; never commit secrets)
+deploy/env/*.env
