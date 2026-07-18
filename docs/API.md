@@ -1,6 +1,37 @@
-# Beacon — API Reference
+# Beacon API Reference
 
-All responses use a common JSON envelope:
+Beacon is an asynchronous email notification service backed by [Temporal](https://temporal.io/).
+Every send request is acknowledged immediately (HTTP 202) and executed by a background worker.
+
+**Default base URL**: `http://localhost:6969`  
+**Port override**: set `SERVER_PORT` environment variable.  
+**OpenAPI spec**: [`api/openapi.yaml`](../api/openapi.yaml)
+
+---
+
+## Authentication
+
+| Endpoint group | Auth required |
+|---|---|
+| `POST /notify/email` | None (MVP — internal use) |
+| `GET /dlq/failed` | None |
+| `POST /dlq/replay/{workflowID}` | None |
+| `POST /admin/config/refresh` | Bearer token (`ADMIN_TOKEN`) |
+| `GET /healthz/*` | None |
+
+For the admin endpoint, pass the token in the `Authorization` header:
+
+```
+Authorization: Bearer <value-of-ADMIN_TOKEN>
+```
+
+If `ADMIN_TOKEN` is not set on the server the endpoint returns HTTP 403 (disabled).
+
+---
+
+## Response Envelope
+
+All non-health responses use a common JSON envelope:
 
 ```json
 {
@@ -19,7 +50,7 @@ On error the envelope collapses to:
 }
 ```
 
-The sections below show only the `data` fields in success examples; the outer envelope is always present.
+Health endpoints return plain text, not JSON.
 
 ---
 
@@ -34,10 +65,10 @@ These endpoints return plain text — not JSON.
 
 | Endpoint | 200 body | Notes |
 |---|---|---|
-| `/healthz/live` | `ok` | Liveness — process is alive |
-| `/healthz/ready` | `ready` | Readiness — server is ready to serve traffic |
+| `/healthz/live` | `ok` | Liveness — process is alive; no external dependencies checked |
+| `/healthz/ready` | `ready` | Readiness — startup is complete (config loaded, registry built) |
 
-`/healthz/ready` returns `503 Service Unavailable` when the server is not yet ready.
+`/healthz/ready` returns `503 Service Unavailable` with body `not ready` during startup or after a fatal initialization failure.
 
 ---
 
@@ -80,6 +111,14 @@ Content-Type: application/json
 }
 ```
 
+**202 response `data` object:**
+
+| Field | Type | Description |
+|---|---|---|
+| `workflow_id` | string | Temporal workflow ID |
+| `workflow_run_id` | string | Temporal run ID |
+| `provider` | string | Email provider selected for this request |
+
 Beacon returns immediately after the workflow is started. Delivery happens asynchronously.
 
 **Error responses:**
@@ -92,6 +131,7 @@ Beacon returns immediately after the workflow is started. Delivery happens async
 | `400 Bad Request` | Invalid email in `to` | `"invalid email address: to"` |
 | `400 Bad Request` | Unknown `client_hint` routing category | `"routing error: ..."` |
 | `405 Method Not Allowed` | Non-POST request | `"unsupported method"` |
+| `500 Internal Server Error` | Temporal workflow dispatch failed | `"failed to trigger email notification"` |
 | `503 Service Unavailable` | Temporal client not connected at startup | `"temporal service not available"` |
 
 ---
@@ -103,7 +143,7 @@ POST /admin/config/refresh
 Authorization: Bearer <ADMIN_TOKEN>
 ```
 
-Forces an immediate re-fetch of SMTP provider configuration from Infisical and reloads the email client registry. Requires `ADMIN_TOKEN` to be set in the server's environment.
+Forces an immediate re-fetch of SMTP provider configuration from Infisical and reloads the in-memory email client registry. Useful for propagating secret updates without waiting for the next background poll (default 300 s). Requires `ADMIN_TOKEN` to be set in the server's environment.
 
 **Auth semantics:**
 
@@ -111,7 +151,7 @@ Forces an immediate re-fetch of SMTP provider configuration from Infisical and r
 |---|---|---|
 | `ADMIN_TOKEN` env var not set | `403 Forbidden` | `"admin endpoint disabled"` |
 | `ADMIN_TOKEN` set, header absent or wrong | `401 Unauthorized` | `"unauthorized"` |
-| Valid token | 200 or 503 (see below) | — |
+| Valid token | 200, 500, or 503 (see below) | — |
 
 **Response — 200 OK (production mode):**
 
@@ -126,6 +166,13 @@ Forces an immediate re-fetch of SMTP provider configuration from Infisical and r
 }
 ```
 
+**200 response `data` object:**
+
+| Field | Type | Description |
+|---|---|---|
+| `revision` | integer | Config revision after reload |
+| `providers` | string[] | Provider names active after reload |
+
 **Response — 503 Service Unavailable (DEV_MODE=true):**
 
 ```json
@@ -136,6 +183,13 @@ Forces an immediate re-fetch of SMTP provider configuration from Infisical and r
 ```
 
 Config refresh is intentionally disabled in DEV_MODE because there is no Infisical backend to poll.
+
+**Other error responses:**
+
+| Status | Condition |
+|---|---|
+| `405 Method Not Allowed` | Non-POST request |
+| `500 Internal Server Error` | Infisical fetch or registry reload failed |
 
 ---
 
@@ -153,8 +207,8 @@ Returns closed Temporal workflow executions that ended in a failed, timed-out, o
 |---|---|---|
 | `status` | string | Filter by terminal status: `Failed`, `TimedOut`, or `Canceled`. Omit for all three. |
 | `provider` | string | Filter by SMTP provider name (e.g. `sendgrid`). |
-| `from` | RFC 3339 string | Inclusive start of the workflow close-time window. |
-| `to` | RFC 3339 string | Inclusive end of the workflow close-time window. |
+| `from` | RFC 3339 string | Inclusive start of the workflow close-time window. Defaults to 30 days ago. |
+| `to` | RFC 3339 string | Inclusive end of the workflow close-time window. Defaults to now. |
 | `limit` | integer | Max results to return (default 20, max 100). |
 | `offset` | integer | Pagination offset. |
 
@@ -184,11 +238,35 @@ Returns closed Temporal workflow executions that ended in a failed, timed-out, o
 }
 ```
 
+**200 response `data` object:**
+
+| Field | Type | Description |
+|---|---|---|
+| `failures` | array | Array of `FailedNotification` objects |
+| `count` | integer | Number of items returned |
+
+**`FailedNotification` object:**
+
+| Field | Type | Description |
+|---|---|---|
+| `workflow_id` | string | Temporal workflow ID |
+| `run_id` | string | Temporal run ID |
+| `recipient` | string | Original recipient address |
+| `subject` | string | Original email subject |
+| `provider` | string | Provider that handled the execution |
+| `failure_reason` | string | Last error message from Temporal history |
+| `retry_count` | integer | Number of activity retries attempted |
+| `last_attempt_at` | string (RFC 3339) | Timestamp of last activity attempt |
+| `closed_at` | string (RFC 3339) | Timestamp workflow execution closed |
+| `status` | string | `Failed`, `TimedOut`, or `Canceled` |
+
 **Error responses:**
 
 | Status | Condition |
 |---|---|
 | `400 Bad Request` | `from` or `to` value is not a valid RFC 3339 timestamp |
+| `405 Method Not Allowed` | Non-GET request |
+| `500 Internal Server Error` | Temporal history query failed |
 | `503 Service Unavailable` | Temporal client not connected at startup |
 
 ---
@@ -199,7 +277,7 @@ Returns closed Temporal workflow executions that ended in a failed, timed-out, o
 POST /dlq/replay/{workflowID}
 ```
 
-Dispatches a new Temporal workflow execution using the original input from the failed workflow. The new workflow ID is `replay-{workflowID}`. Temporal's `ALLOW_DUPLICATE_FAILED_ONLY` reuse policy prevents duplicate replays.
+Reads the original `EmailMessage` from the failed workflow's Temporal history and dispatches a **new** workflow execution using that input; the original execution is preserved. The new workflow ID is `replay-{workflowID}`. Only workflows in a terminal state (`Failed`, `TimedOut`, `Canceled`) can be replayed, and Temporal's `ALLOW_DUPLICATE_FAILED_ONLY` reuse policy prevents duplicate replays.
 
 **Path parameter:**
 
@@ -222,14 +300,25 @@ Dispatches a new Temporal workflow execution using the original input from the f
 }
 ```
 
+**202 response `data` object (`ReplayResult`):**
+
+| Field | Type | Description |
+|---|---|---|
+| `new_workflow_id` | string | New Temporal workflow ID (`replay-{workflowID}`) |
+| `new_run_id` | string | New Temporal run ID |
+| `original_workflow_id` | string | The ID passed in the path |
+| `provider` | string | Provider used for the replay |
+
 **Error responses:**
 
 | Status | Condition | Error field value |
 |---|---|---|
 | `400 Bad Request` | Missing workflow ID in path | `"workflow ID is required"` |
 | `404 Not Found` | Workflow ID does not exist in Temporal | `"workflow not found: <id>"` |
+| `405 Method Not Allowed` | Non-POST request | `"method not allowed"` |
 | `409 Conflict` | Workflow is still running (not in a terminal state) | `"workflow is still running; replay not allowed"` |
 | `409 Conflict` | A replay is already in progress for this workflow | `"replay already in progress for workflow: <id>"` |
+| `500 Internal Server Error` | Replay dispatch failed | `"replay failed"` |
 | `503 Service Unavailable` | Temporal client not connected at startup | `"temporal service not available"` |
 
 ---

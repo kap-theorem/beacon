@@ -9,6 +9,7 @@ Beacon is an async notification service built in Go. It currently supports email
 | Document | Description |
 |---|---|
 | [API Reference](docs/API.md) | All endpoints with request/response shapes and status codes |
+| [Usage Examples](docs/EXAMPLES.md) | End-to-end request examples and common workflows |
 | [Architecture Overview](docs/ARCHITECTURE.md) | Component diagram, request lifecycle, tech stack |
 | [Configuration Reference](docs/CONFIGURATION.md) | Every environment variable with defaults and descriptions |
 | [Development Guide](docs/DEVELOPMENT.md) | Local setup, build targets, testing workflow |
@@ -16,6 +17,17 @@ Beacon is an async notification service built in Go. It currently supports email
 | [Integration Guide](docs/INTEGRATION.md) | How upstream services call Beacon |
 | [Feature Readiness Matrix](docs/FEATURE_READINESS.md) | Verified endpoint I/O and doc-discrepancy findings |
 | [Future Scope](docs/future-scope.md) | Planned features and known limitations |
+
+---
+
+## Features
+
+- **Async email delivery** via Temporal workflows with automatic retries
+- **Multi-provider SMTP routing** — configure multiple providers in Infisical and route by category using `client_hint`
+- **Config watcher** — hot-reloads provider configs from Infisical without restart (`CONFIG_POLL_INTERVAL`)
+- **Dead Letter Queue** — query failed workflows (`GET /dlq/failed`) and replay them (`POST /dlq/replay/{workflowID}`)
+- **Admin config refresh** — manually trigger a reload via `POST /admin/config/refresh` (requires `ADMIN_TOKEN`)
+- **Health probes** — `/healthz/live` and `/healthz/ready` for liveness and readiness checks
 
 ---
 
@@ -47,6 +59,13 @@ Beacon is an async notification service built in Go. It currently supports email
 
 Both the HTTP server and the email worker must be running for delivery to work.
 
+For a fully local smoke test (no real Infisical instance needed), use the mock test script:
+```bash
+bash scripts/test-local.sh
+```
+
+For all available make targets, see the [Development Guide](docs/DEVELOPMENT.md).
+
 ---
 
 ## Testing
@@ -72,3 +91,4 @@ make test-integration
 - Go 1.24+
 - [Temporal](https://learn.temporal.io/getting_started/go/dev_environment/) running at `localhost:7233`
 - An SMTP provider or dev mode (`DEV_MODE=true`) with local SMTP vars
+- [Infisical](docs/infisical/INFISICAL_QUICKSTART.md) for production SMTP secret management (optional in dev mode)

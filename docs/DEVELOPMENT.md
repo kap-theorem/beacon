@@ -32,7 +32,7 @@
      -d '{"to":"you@example.com","subject":"Test","body":"Hello!"}'
    ```
 
-## Building and Running
+## Make Targets
 
 ```bash
 # Build both binaries into bin/
@@ -42,8 +42,8 @@ make build
 make build-server
 make build-email-worker
 
-# Run
-make run-server        # starts HTTP server
+# Run (builds first if needed)
+make run-server        # starts HTTP server on :6969
 make run-email-worker  # starts Temporal worker
 
 # Clean
