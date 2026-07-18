@@ -9,7 +9,19 @@ Beacon is an async notification service built in Go. It currently supports email
 - [Architecture Overview](docs/ARCHITECTURE.md)
 - [Configuration Reference](docs/CONFIGURATION.md)
 - [API Reference](docs/API.md)
+- [Usage Examples](docs/EXAMPLES.md)
 - [Development Guide](docs/DEVELOPMENT.md)
+
+---
+
+## Features
+
+- **Async email delivery** via Temporal workflows with automatic retries
+- **Multi-provider SMTP routing** — configure multiple providers in Infisical and route by category using `client_hint`
+- **Config watcher** — hot-reloads provider configs from Infisical without restart (`CONFIG_POLL_INTERVAL`)
+- **Dead Letter Queue** — query failed workflows (`GET /dlq/failed`) and replay them (`POST /dlq/replay/{workflowID}`)
+- **Admin config refresh** — manually trigger a reload via `POST /admin/config/refresh` (requires `ADMIN_TOKEN`)
+- **Health probes** — `/healthz/live` and `/healthz/ready` for liveness and readiness checks
 
 ---
 
@@ -41,6 +53,13 @@ Beacon is an async notification service built in Go. It currently supports email
      -d '{"to":"you@example.com","subject":"Test","body":"Hello!"}'
    ```
 
+For a fully local smoke test (no real Infisical instance needed), use the mock test script:
+```bash
+bash scripts/test-local.sh
+```
+
+For all available make targets, see the [Development Guide](docs/DEVELOPMENT.md).
+
 ---
 
 ## Prerequisites
@@ -48,3 +67,4 @@ Beacon is an async notification service built in Go. It currently supports email
 - Go 1.24+
 - [Temporal](https://learn.temporal.io/getting_started/go/dev_environment/) running at `localhost:7233`
 - An SMTP provider or dev mode (`DEV_MODE=true`) with local SMTP vars
+- [Infisical](docs/infisical/INFISICAL_QUICKSTART.md) for production SMTP secret management (optional in dev mode)

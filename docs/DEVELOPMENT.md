@@ -34,7 +34,7 @@
      -d '{"to":"you@example.com","subject":"Test","body":"Hello!"}'
    ```
 
-## Building and Running
+## Make Targets
 
 ```bash
 # Build (note: will fail until cmd/email_worker is added)
@@ -43,8 +43,8 @@ make build
 # Build individually
 make build-server
 
-# Run
-make run-server   # starts HTTP server
+# Run (builds first if needed)
+make run-server   # starts HTTP server on :6969
 
 # Clean
 make clean

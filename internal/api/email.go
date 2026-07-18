@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/mail"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/client"
@@ -38,8 +40,18 @@ func (h *EmailHandler) HandleRequest(w http.ResponseWriter, req *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if request.To == "" || request.Subject == "" {
-		utils.WriteError(w, http.StatusBadRequest, "missing required fields: to, subject")
+
+	trimmedTo := strings.TrimSpace(request.To)
+	if trimmedTo == "" {
+		utils.WriteError(w, http.StatusBadRequest, "missing required field: to")
+		return
+	}
+	if request.Subject == "" {
+		utils.WriteError(w, http.StatusBadRequest, "missing required field: subject")
+		return
+	}
+	if _, err := mail.ParseAddress(trimmedTo); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "invalid email address: to")
 		return
 	}
 

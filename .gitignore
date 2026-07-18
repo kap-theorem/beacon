@@ -41,3 +41,9 @@ server
 .claude/
 .aidlc-rule-details/
 aidlc-docs/
+
+# Docs
+docs/infisical/
+
+# Local tooling
+.mcp.json
