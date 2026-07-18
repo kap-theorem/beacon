@@ -32,15 +32,22 @@ go.work.sum
 # .idea/
 # .vscode/
 
-# Binaries
+# Binaries (root-level build outputs only; anchored so they don't shadow cmd/* source dirs)
 bin/
-email_worker
-server
+/email_worker
+/server
 
 # Claude
 .claude/
 .aidlc-rule-details/
 aidlc-docs/
+
+coverage.out
+coverage.html
+covdata/
+
+# Local deployment env files (copy from *.env.example; never commit secrets)
+deploy/env/*.env
 
 # Docs
 docs/infisical/

@@ -1,0 +1,39 @@
+# ---------------------------------------------------------------------------
+# Cloudflare Tunnel configuration for Beacon
+#
+# SECURITY WARNING: Without Cloudflare Access policies configured in the
+# Zero Trust dashboard, the /notify/email endpoint is an open email relay
+# accessible to anyone who can reach the tunnel hostname.  The ingress rules
+# below route /notify/email and /dlq/* to beacon-server, but they do NOT
+# enforce authentication on their own.
+#
+# You MUST create a Cloudflare Access "Self-Hosted Application" covering
+# at minimum the /notify/email and /dlq/* paths and require a Service Token
+# (or another suitable identity provider policy) before exposing this tunnel
+# publicly.
+#
+# See docs/future-scope.md for planned app-layer auth enhancements.
+# ---------------------------------------------------------------------------
+
+tunnel: <TUNNEL_ID>
+credentials-file: /etc/cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  # Health probes are public — infrastructure/load-balancer use only.
+  - hostname: beacon.example.com
+    path: /healthz/*
+    service: http://beacon-server:6969
+
+  # /notify/email and /dlq/* MUST be protected by a Cloudflare Access
+  # application (service tokens) configured in the Zero Trust dashboard.
+  # Without that policy, /notify/email is an open relay.
+  - hostname: beacon.example.com
+    path: /notify/email
+    service: http://beacon-server:6969
+
+  - hostname: beacon.example.com
+    path: /dlq/*
+    service: http://beacon-server:6969
+
+  # Catch-all: return 404 for any unmatched hostname or path.
+  - service: http_status:404

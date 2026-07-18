@@ -1,0 +1,19 @@
+# Temporal dynamic config for SQL-backed (PostgreSQL) deployments.
+# Place this file at /etc/temporal/config/dynamicconfig/development-sql.yaml
+# inside the temporalio/auto-setup container and set:
+#   DYNAMIC_CONFIG_FILE_PATH=/etc/temporal/config/dynamicconfig/development-sql.yaml
+#
+# Keys follow the Temporal dynamic-config spec:
+#   https://docs.temporal.io/references/dynamic-configuration
+
+frontend.enableClientVersionCheck:
+  - value: true
+    constraints: {}
+
+limit.maxIDLength:
+  - value: 1000
+    constraints: {}
+
+system.advancedVisibilityWritingMode:
+  - value: "off"
+    constraints: {}

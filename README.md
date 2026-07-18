@@ -6,11 +6,17 @@ Beacon is an async notification service built in Go. It currently supports email
 
 ## Documentation
 
-- [Architecture Overview](docs/ARCHITECTURE.md)
-- [Configuration Reference](docs/CONFIGURATION.md)
-- [API Reference](docs/API.md)
-- [Usage Examples](docs/EXAMPLES.md)
-- [Development Guide](docs/DEVELOPMENT.md)
+| Document | Description |
+|---|---|
+| [API Reference](docs/API.md) | All endpoints with request/response shapes and status codes |
+| [Usage Examples](docs/EXAMPLES.md) | End-to-end request examples and common workflows |
+| [Architecture Overview](docs/ARCHITECTURE.md) | Component diagram, request lifecycle, tech stack |
+| [Configuration Reference](docs/CONFIGURATION.md) | Every environment variable with defaults and descriptions |
+| [Development Guide](docs/DEVELOPMENT.md) | Local setup, build targets, testing workflow |
+| [Deployment Guide](docs/DEPLOYMENT.md) | Docker Compose and systemd deployment instructions |
+| [Integration Guide](docs/INTEGRATION.md) | How upstream services call Beacon |
+| [Feature Readiness Matrix](docs/FEATURE_READINESS.md) | Verified endpoint I/O and doc-discrepancy findings |
+| [Future Scope](docs/future-scope.md) | Planned features and known limitations |
 
 ---
 
@@ -38,13 +44,11 @@ Beacon is an async notification service built in Go. It currently supports email
    # Set DEV_MODE=true and fill in DEV_SMTP_* vars
    ```
 
-3. Run the HTTP server:
+3. Run the services:
    ```bash
-   make run-server
+   make run-server &
+   make run-email-worker
    ```
-
-   > **Note:** The email worker binary (`cmd/email_worker`) is not yet implemented.
-   > Until it is available, Temporal workflows will be enqueued but not executed.
 
 4. Send a test email:
    ```bash
@@ -53,12 +57,32 @@ Beacon is an async notification service built in Go. It currently supports email
      -d '{"to":"you@example.com","subject":"Test","body":"Hello!"}'
    ```
 
+Both the HTTP server and the email worker must be running for delivery to work.
+
 For a fully local smoke test (no real Infisical instance needed), use the mock test script:
 ```bash
 bash scripts/test-local.sh
 ```
 
 For all available make targets, see the [Development Guide](docs/DEVELOPMENT.md).
+
+---
+
+## Testing
+
+```bash
+# Unit tests
+make test
+
+# Coverage gate (requires ≥90% across internal/ and utils)
+make cover
+
+# HTML coverage report written to coverage.html
+make cover-html
+
+# Integration tests (require a reachable Temporal at localhost:7233)
+make test-integration
+```
 
 ---
 

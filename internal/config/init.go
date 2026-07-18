@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"strconv"
 	"time"
@@ -18,7 +19,11 @@ func InitializeConfigService(ctx context.Context, logger *slog.Logger) (*ConfigS
 		if err != nil {
 			return nil, fmt.Errorf("failed to build dev config bundle: %w", err)
 		}
-		svc := &ConfigService{authMethod: "dev", logger: logger}
+		svc := &ConfigService{
+			authMethod: "dev",
+			logger:     logger,
+			httpClient: &http.Client{Timeout: 10 * time.Second},
+		}
 		svc.Store(bundle)
 		globalConfigService = svc
 		logger.Info("dev config service initialized", slog.Int("providers", len(bundle.SMTP)))
