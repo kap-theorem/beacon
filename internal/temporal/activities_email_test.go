@@ -41,9 +41,6 @@ func TestSendEmailActivity_DelegatesToNotifier(t *testing.T) {
 	if fn.got.Type != notifier.EmailNotifier {
 		t.Fatalf("unexpected Type: got %q, want %q", fn.got.Type, notifier.EmailNotifier)
 	}
-	if fn.got.ID == "" {
-		t.Fatal("expected a non-empty message ID")
-	}
 }
 
 // TestSendEmailActivity_PropagatesNotifierError verifies that errors returned

@@ -34,27 +34,13 @@ func InitializeConfigService(ctx context.Context, logger *slog.Logger) (*ConfigS
 	infisicalProjectID := os.Getenv("INFISICAL_PROJECT_ID")
 	infisicalEnvironment := os.Getenv("INFISICAL_ENVIRONMENT")
 
-	// Support both old API token and new Machine Identity methods
-	infisicalToken := os.Getenv("INFISICAL_TOKEN")
+	// Support both API key and Machine Identity methods
 	infisicalAPIKey := os.Getenv("INFISICAL_API_KEY")
 	infisicalClientID := os.Getenv("INFISICAL_CLIENT_ID")
 	infisicalClientSecret := os.Getenv("INFISICAL_CLIENT_SECRET")
 
 	if infisicalAddr == "" {
 		infisicalAddr = "http://localhost:8000"
-	}
-
-	// Log which auth method is being used
-	if infisicalClientID != "" && infisicalClientSecret != "" {
-		logger.Info("using machine identity authentication",
-			slog.String("client_id", infisicalClientID[:min(8, len(infisicalClientID))]+"..."),
-		)
-	} else if infisicalAPIKey != "" {
-		logger.Info("using API key authentication")
-	} else if infisicalToken != "" {
-		logger.Info("using legacy token authentication")
-	} else {
-		logger.Warn("no infisical credentials provided, using empty auth")
 	}
 
 	service := NewConfigService(infisicalAddr, infisicalProjectID, infisicalEnvironment, infisicalAPIKey, infisicalClientID, infisicalClientSecret, logger)
@@ -121,7 +107,6 @@ func buildDevBundle() (*ConfigBundle, error) {
 		Username:    os.Getenv("DEV_SMTP_USERNAME"),
 		Password:    os.Getenv("DEV_SMTP_PASSWORD"),
 		AuthType:    authType,
-		MaxRetries:  3,
 		FromAddress: fromAddr,
 		FromName:    firstNonEmpty(os.Getenv("DEV_SMTP_FROM_NAME"), "Beacon"),
 	}

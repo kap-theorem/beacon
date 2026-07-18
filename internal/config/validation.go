@@ -113,10 +113,10 @@ func validateSemantic(cfg *SMTPClientConfig) *ValidationResult {
 		})
 	}
 
-	if cfg.Password == "" && cfg.APIKey == "" {
+	if cfg.Password == "" {
 		errors = append(errors, FieldError{
-			Field:  "password/api_key",
-			Reason: "at least one of password or api_key is required",
+			Field:  "password",
+			Reason: "required",
 		})
 	}
 
@@ -132,22 +132,6 @@ func validateSemantic(cfg *SMTPClientConfig) *ValidationResult {
 			Field:  "timeout",
 			Reason: "must be >= 0",
 			Value:  cfg.Timeout.String(),
-		})
-	}
-
-	if cfg.MaxRetries < 0 {
-		errors = append(errors, FieldError{
-			Field:  "max_retries",
-			Reason: "must be >= 0",
-			Value:  fmt.Sprintf("%d", cfg.MaxRetries),
-		})
-	}
-
-	if cfg.MaxPerHour < 0 {
-		errors = append(errors, FieldError{
-			Field:  "max_per_hour",
-			Reason: "must be >= 0",
-			Value:  fmt.Sprintf("%d", cfg.MaxPerHour),
 		})
 	}
 

@@ -121,6 +121,17 @@ Content-Type: application/json
 
 Beacon returns immediately after the workflow is started. Delivery happens asynchronously.
 
+**Retry policy** (hardcoded in the workflow):
+
+| Setting | Value |
+|---|---|
+| Initial interval | 5 s |
+| Backoff coefficient | 2.0 |
+| Maximum interval | 2 min |
+| Maximum attempts | 3 |
+
+If all attempts fail, the workflow closes as Failed and appears in `GET /dlq/failed`.
+
 **Error responses:**
 
 | Status | Condition | Error field value |
@@ -144,6 +155,11 @@ Authorization: Bearer <ADMIN_TOKEN>
 ```
 
 Forces an immediate re-fetch of SMTP provider configuration from Infisical and reloads the in-memory email client registry. Useful for propagating secret updates without waiting for the next background poll (default 300 s). Requires `ADMIN_TOKEN` to be set in the server's environment.
+
+```bash
+curl -s -X POST http://localhost:6969/admin/config/refresh \
+  -H "Authorization: Bearer <value-of-ADMIN_TOKEN>"
+```
 
 **Auth semantics:**
 
@@ -211,6 +227,16 @@ Returns closed Temporal workflow executions that ended in a failed, timed-out, o
 | `to` | RFC 3339 string | Inclusive end of the workflow close-time window. Defaults to now. |
 | `limit` | integer | Max results to return (default 20, max 100). |
 | `offset` | integer | Pagination offset. |
+
+**Pagination example:**
+
+```bash
+# First page
+curl -s "http://localhost:6969/dlq/failed?limit=20&offset=0"
+
+# Second page
+curl -s "http://localhost:6969/dlq/failed?limit=20&offset=20"
+```
 
 **Response — 200 OK:**
 

@@ -10,8 +10,6 @@ Beacon is configured via environment variables. Copy `.env.example` to `.env` an
 | `ADMIN_TOKEN` | — | Bearer token that protects `POST /admin/config/refresh`. When unset the endpoint returns `403 Forbidden` (disabled). When set, requests must include `Authorization: Bearer <ADMIN_TOKEN>`. |
 | `CONFIG_POLL_INTERVAL` | `300` | How often (in seconds) the ConfigWatcher re-fetches SMTP config from Infisical. Set to `0` or leave unset to use the default 300 s. |
 
-> Note: `EMAIL_NOTIFIER_TASK_QUEUE` is **not** read by the codebase. The task queue name is derived at runtime as `email-<providerName>-queue` by `notifier.TaskQueueFor()`. Do not set this variable.
-
 ## Temporal
 
 `TEMPORAL_ADDRESS` and `TEMPORAL_NAMESPACE` are read by the Temporal Go SDK's `envconfig.LoadDefaultClientOptions()`.
@@ -31,6 +29,8 @@ Beacon is configured via environment variables. Copy `.env.example` to `.env` an
 
 Beacon loads SMTP provider configuration from [Infisical](https://infisical.com/) at path `/beacon/smtp`. See [`infisical-example.json`](../infisical-example.json) for the expected JSON shape.
 
+At startup the initial fetch is retried with bounded backoff — up to 5 attempts over ~31 s — before the process gives up. On a failed background refresh, Beacon keeps serving the previous config.
+
 ### Connection
 
 | Variable | Description |
@@ -45,7 +45,6 @@ Beacon detects which credentials to use in this priority order:
 
 1. **Machine Identity** — `INFISICAL_CLIENT_ID` + `INFISICAL_CLIENT_SECRET` (recommended for production)
 2. **API Key** — `INFISICAL_API_KEY`
-3. **Legacy Token** — `INFISICAL_TOKEN`
 
 If multiple sets of credentials are present, the highest-priority method wins.
 
@@ -54,7 +53,6 @@ If multiple sets of credentials are present, the highest-priority method wins.
 | `INFISICAL_CLIENT_ID` | Machine identity client ID |
 | `INFISICAL_CLIENT_SECRET` | Machine identity client secret (required with `INFISICAL_CLIENT_ID`) |
 | `INFISICAL_API_KEY` | Infisical API key (used when machine identity vars are absent) |
-| `INFISICAL_TOKEN` | Legacy service token (used when neither machine identity nor API key is present) |
 
 ## SMTP Config (dev mode — local testing)
 

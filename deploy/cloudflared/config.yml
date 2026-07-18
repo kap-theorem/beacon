@@ -12,7 +12,8 @@
 # (or another suitable identity provider policy) before exposing this tunnel
 # publicly.
 #
-# See docs/future-scope.md for planned app-layer auth enhancements.
+# Per-service API-key auth at the app layer is planned; until then Cloudflare
+# Access is the only protection for /dlq/* and /notify/*.
 # ---------------------------------------------------------------------------
 
 tunnel: <TUNNEL_ID>

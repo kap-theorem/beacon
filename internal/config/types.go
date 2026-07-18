@@ -19,11 +19,6 @@ type TLSConfig struct {
 	ServerName string `json:"server_name,omitempty"`
 }
 
-type RuleSet struct {
-	DailyLimit  int `json:"daily_limit,omitempty"`
-	HourlyLimit int `json:"hourly_limit,omitempty"`
-}
-
 type SMTPClientConfig struct {
 	Name        string        `json:"name"`
 	Provider    string        `json:"provider"`
@@ -31,36 +26,13 @@ type SMTPClientConfig struct {
 	Port        int           `json:"port"`
 	Username    string        `json:"username"`
 	Password    string        `json:"-"`
-	APIKey      string        `json:"-"`
 	AuthType    AuthType      `json:"auth_type"`
 	TLS         TLSConfig     `json:"tls"`
 	Timeout     time.Duration `json:"timeout"`
-	MaxRetries  int           `json:"max_retries"`
-	MaxPerHour  int           `json:"max_per_hour"`
-	Rules       RuleSet       `json:"rules,omitempty"`
 	Categories  []string      `json:"categories,omitempty"`
 	IsDefault   bool          `json:"is_default,omitempty"`
 	FromAddress string        `json:"from_address,omitempty"`
 	FromName    string        `json:"from_name,omitempty"`
-}
-
-func (c *SMTPClientConfig) String() string {
-	return fmt.Sprintf("SMTPClientConfig{Provider: %s, Host: %s:%d, AuthType: %s}",
-		c.Provider, c.Host, c.Port, c.AuthType)
-}
-
-func (c *SMTPClientConfig) LogSafe() map[string]interface{} {
-	return map[string]interface{}{
-		"name":      c.Name,
-		"provider":  c.Provider,
-		"host":      c.Host,
-		"port":      c.Port,
-		"username":  c.Username,
-		"auth_type": c.AuthType,
-		"tls":       c.TLS,
-		"timeout":   c.Timeout,
-		"rules":     c.Rules,
-	}
 }
 
 type FieldError struct {
@@ -80,13 +52,6 @@ type ConfigBundle struct {
 	Timestamp time.Time                    `json:"timestamp"`
 }
 
-type ProviderInfo struct {
-	Name string
-	Path string
-}
-
-type ConfigLoadedCallback func(bundle *ConfigBundle, err error)
-
 var (
 	ErrProviderNotFound     = fmt.Errorf("provider not found")
 	ErrConfigNotInitialized = fmt.Errorf("config service not initialized")
@@ -98,7 +63,6 @@ func (c *SMTPClientConfig) UnmarshalJSON(data []byte) error {
 	aux := &struct {
 		Timeout  string `json:"timeout"`
 		Password string `json:"password"`
-		APIKey   string `json:"api_key"`
 		*Alias
 	}{
 		Alias: (*Alias)(c),
@@ -115,9 +79,6 @@ func (c *SMTPClientConfig) UnmarshalJSON(data []byte) error {
 	}
 	if aux.Password != "" {
 		c.Password = aux.Password
-	}
-	if aux.APIKey != "" {
-		c.APIKey = aux.APIKey
 	}
 	return nil
 }

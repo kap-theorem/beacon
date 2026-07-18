@@ -21,9 +21,9 @@ var ErrWorkflowNotFound = errors.New("workflow not found")
 // ErrReplayAlreadyRunning is returned when a replay workflow for the given ID is already in progress.
 var ErrReplayAlreadyRunning = errors.New("replay already in progress for this workflow")
 
-// replayWorkflow fetches the original workflow input and dispatches a new SendEmailWorkflow execution.
-func replayWorkflow(ctx context.Context, tc client.Client, workflowID string) (*ReplayResult, error) {
-	descResp, err := tc.DescribeWorkflowExecution(ctx, workflowID, "")
+// ReplayWorkflow fetches the original workflow input and dispatches a new SendEmailWorkflow execution (S5).
+func (s *DLQService) ReplayWorkflow(ctx context.Context, workflowID string) (*ReplayResult, error) {
+	descResp, err := s.tc.DescribeWorkflowExecution(ctx, workflowID, "")
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrWorkflowNotFound, workflowID)
 	}
@@ -41,7 +41,7 @@ func replayWorkflow(ctx context.Context, tc client.Client, workflowID string) (*
 		return nil, ErrNotTerminalState
 	}
 
-	details, err := extractWorkflowDetails(ctx, tc, workflowID, runID)
+	details, err := extractWorkflowDetails(ctx, s.tc, workflowID, runID)
 	if err != nil {
 		return nil, fmt.Errorf("extract workflow input from history: %w", err)
 	}
@@ -54,7 +54,7 @@ func replayWorkflow(ctx context.Context, tc client.Client, workflowID string) (*
 	// Use a deterministic replay ID so Temporal itself rejects duplicate starts.
 	newWorkflowID := fmt.Sprintf("replay-%s", workflowID)
 
-	run, err := tc.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+	run, err := s.tc.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID:                    newWorkflowID,
 		TaskQueue:             replayQueue,
 		WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,

@@ -18,32 +18,10 @@ type EmailClientRegistry struct {
 // NewEmailClientRegistry builds a registry from a loaded config bundle.
 // If exactly one provider exists and none is marked is_default, it becomes the default.
 func NewEmailClientRegistry(bundle *config.ConfigBundle) (*EmailClientRegistry, error) {
-	if bundle == nil || len(bundle.SMTP) == 0 {
-		return nil, fmt.Errorf("config bundle has no SMTP providers")
+	r := &EmailClientRegistry{}
+	if err := r.Reload(bundle); err != nil {
+		return nil, err
 	}
-
-	r := &EmailClientRegistry{
-		clients:    make(map[string]*EmailService, len(bundle.SMTP)),
-		categories: make(map[string]string),
-	}
-
-	for name, cfg := range bundle.SMTP {
-		r.clients[name] = NewEmailService(cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.FromAddress, cfg.FromName)
-		for _, cat := range cfg.Categories {
-			r.categories[cat] = name
-		}
-		if cfg.IsDefault {
-			r.defaultKey = name
-		}
-	}
-
-	// Auto-default when there is only one provider.
-	if r.defaultKey == "" && len(r.clients) == 1 {
-		for name := range r.clients {
-			r.defaultKey = name
-		}
-	}
-
 	return r, nil
 }
 
@@ -82,23 +60,15 @@ func (r *EmailClientRegistry) Reload(bundle *config.ConfigBundle) error {
 
 	newClients := make(map[string]*EmailService, len(bundle.SMTP))
 	newCategories := make(map[string]string)
-	var newDefault string
 
 	for name, cfg := range bundle.SMTP {
 		newClients[name] = NewEmailService(cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.FromAddress, cfg.FromName)
 		for _, cat := range cfg.Categories {
 			newCategories[cat] = name
 		}
-		if cfg.IsDefault {
-			newDefault = name
-		}
 	}
 
-	if newDefault == "" && len(newClients) == 1 {
-		for name := range newClients {
-			newDefault = name
-		}
-	}
+	newDefault := config.DefaultProviderName(bundle)
 
 	r.mu.Lock()
 	r.clients = newClients

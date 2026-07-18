@@ -2,15 +2,11 @@ package config
 
 import (
 	"net/http"
-	"sync"
 	"sync/atomic"
 )
 
 type HealthChecker struct {
-	ready    atomic.Bool
-	mu       sync.RWMutex
-	lastErr  error
-	cacheAge func() (bool, string)
+	ready atomic.Bool
 }
 
 func NewHealthChecker() *HealthChecker {
@@ -19,12 +15,6 @@ func NewHealthChecker() *HealthChecker {
 
 func (hc *HealthChecker) SetReady(ready bool) {
 	hc.ready.Store(ready)
-}
-
-func (hc *HealthChecker) SetError(err error) {
-	hc.mu.Lock()
-	defer hc.mu.Unlock()
-	hc.lastErr = err
 }
 
 func (hc *HealthChecker) HandleLive(w http.ResponseWriter, r *http.Request) {

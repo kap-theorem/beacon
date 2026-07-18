@@ -49,7 +49,7 @@ func TestReplay_WorkflowNotFound(t *testing.T) {
 	mc.On("DescribeWorkflowExecution", ctx, "wf-missing", "").
 		Return((*workflowservice.DescribeWorkflowExecutionResponse)(nil), errors.New("not found"))
 
-	_, err := replayWorkflow(ctx, mc, "wf-missing")
+	_, err := NewDLQService(mc, "default", noopLogger()).ReplayWorkflow(ctx, "wf-missing")
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrWorkflowNotFound), "expected ErrWorkflowNotFound, got %v", err)
 	mc.AssertExpectations(t)
@@ -62,7 +62,7 @@ func TestReplay_NotTerminal_Running(t *testing.T) {
 	mc.On("DescribeWorkflowExecution", ctx, "wf1", "").
 		Return(describeResp(enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, "email-sendgrid-queue", "wf1", "run1"), nil)
 
-	_, err := replayWorkflow(ctx, mc, "wf1")
+	_, err := NewDLQService(mc, "default", noopLogger()).ReplayWorkflow(ctx, "wf1")
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrNotTerminalState), "expected ErrNotTerminalState, got %v", err)
 	mc.AssertExpectations(t)
@@ -75,7 +75,7 @@ func TestReplay_NotTerminal_Completed(t *testing.T) {
 	mc.On("DescribeWorkflowExecution", ctx, "wf2", "").
 		Return(describeResp(enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED, "email-sendgrid-queue", "wf2", "run2"), nil)
 
-	_, err := replayWorkflow(ctx, mc, "wf2")
+	_, err := NewDLQService(mc, "default", noopLogger()).ReplayWorkflow(ctx, "wf2")
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrNotTerminalState), "expected ErrNotTerminalState, got %v", err)
 	mc.AssertExpectations(t)
@@ -92,7 +92,7 @@ func TestReplay_HistoryWithoutInput_ReturnsError(t *testing.T) {
 	iter := emptyHistoryIter()
 	mc.On("GetWorkflowHistory", ctx, "wf3", "run3", false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
 
-	_, err := replayWorkflow(ctx, mc, "wf3")
+	_, err := NewDLQService(mc, "default", noopLogger()).ReplayWorkflow(ctx, "wf3")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "input not found")
 	mc.AssertExpectations(t)
@@ -133,7 +133,7 @@ func TestReplay_TerminalFailed_Success(t *testing.T) {
 		mock.Anything,
 	).Return(wfRun, nil)
 
-	result, err := replayWorkflow(ctx, mc, origWFID)
+	result, err := NewDLQService(mc, "default", noopLogger()).ReplayWorkflow(ctx, origWFID)
 	require.NoError(t, err)
 	assert.Equal(t, expectedNewID, result.NewWorkflowID)
 	assert.Equal(t, "new-run-123", result.NewRunID)
@@ -167,7 +167,7 @@ func TestReplay_TerminalTimedOut_Success(t *testing.T) {
 		mock.Anything,
 	).Return(wfRun, nil)
 
-	result, err := replayWorkflow(ctx, mc, origWFID)
+	result, err := NewDLQService(mc, "default", noopLogger()).ReplayWorkflow(ctx, origWFID)
 	require.NoError(t, err)
 	assert.Equal(t, "mailgun", result.Provider)
 	mc.AssertExpectations(t)
@@ -197,7 +197,7 @@ func TestReplay_TerminalCanceled_Success(t *testing.T) {
 		mock.Anything,
 	).Return(wfRun, nil)
 
-	result, err := replayWorkflow(ctx, mc, origWFID)
+	result, err := NewDLQService(mc, "default", noopLogger()).ReplayWorkflow(ctx, origWFID)
 	require.NoError(t, err)
 	assert.Equal(t, "smtp", result.Provider)
 	mc.AssertExpectations(t)
@@ -229,7 +229,7 @@ func TestReplay_AlreadyStarted(t *testing.T) {
 		mock.Anything,
 	).Return((*mocks.WorkflowRun)(nil), alreadyStartedErr)
 
-	_, err := replayWorkflow(ctx, mc, origWFID)
+	_, err := NewDLQService(mc, "default", noopLogger()).ReplayWorkflow(ctx, origWFID)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrReplayAlreadyRunning), "expected ErrReplayAlreadyRunning, got %v", err)
 	mc.AssertExpectations(t)
@@ -257,7 +257,7 @@ func TestReplay_ExecuteWorkflowError(t *testing.T) {
 		mock.Anything,
 	).Return((*mocks.WorkflowRun)(nil), errors.New("temporal cluster unreachable"))
 
-	_, err := replayWorkflow(ctx, mc, origWFID)
+	_, err := NewDLQService(mc, "default", noopLogger()).ReplayWorkflow(ctx, origWFID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "dispatch replay workflow")
 	mc.AssertExpectations(t)
@@ -300,7 +300,7 @@ func TestReplay_HistoryWithActivityFailure(t *testing.T) {
 		mock.Anything,
 	).Return(wfRun, nil)
 
-	result, err := replayWorkflow(ctx, mc, origWFID)
+	result, err := NewDLQService(mc, "default", noopLogger()).ReplayWorkflow(ctx, origWFID)
 	require.NoError(t, err)
 	assert.Equal(t, "sendgrid", result.Provider)
 	mc.AssertExpectations(t)

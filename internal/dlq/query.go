@@ -16,9 +16,9 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// queryFailedWorkflows lists closed SendEmailWorkflow executions and applies in-process filtering.
+// QueryFailures lists closed SendEmailWorkflow executions and applies in-process filtering (S4, S6).
 // Uses ListClosedWorkflow (no Elasticsearch required) with TypeFilter, then filters by status/provider/date.
-func queryFailedWorkflows(ctx context.Context, tc client.Client, namespace string, filter FailureFilter, logger *slog.Logger) ([]*FailedNotification, error) {
+func (s *DLQService) QueryFailures(ctx context.Context, filter FailureFilter) ([]*FailedNotification, error) {
 	from := filter.FromDate
 	to := filter.ToDate
 	if from.IsZero() {
@@ -35,6 +35,9 @@ func queryFailedWorkflows(ctx context.Context, tc client.Client, namespace strin
 	if limit > 100 {
 		limit = 100
 	}
+	if filter.Offset < 0 {
+		filter.Offset = 0
+	}
 
 	// Fetch more than needed so in-process filters still honour the requested limit.
 	fetchSize := int32(limit+filter.Offset) * 3
@@ -42,8 +45,8 @@ func queryFailedWorkflows(ctx context.Context, tc client.Client, namespace strin
 		fetchSize = 50
 	}
 
-	resp, err := tc.ListClosedWorkflow(ctx, &workflowservice.ListClosedWorkflowExecutionsRequest{
-		Namespace:       namespace,
+	resp, err := s.tc.ListClosedWorkflow(ctx, &workflowservice.ListClosedWorkflowExecutionsRequest{
+		Namespace:       s.namespace,
 		MaximumPageSize: fetchSize,
 		StartTimeFilter: &filterpb.StartTimeFilter{
 			EarliestTime: timestamppb.New(from),
@@ -57,7 +60,17 @@ func queryFailedWorkflows(ctx context.Context, tc client.Client, namespace strin
 		return nil, fmt.Errorf("list closed workflows: %w", err)
 	}
 
-	var results []*FailedNotification
+	// Collect matching executions first (lightweight — no history RPCs), page
+	// them, then fetch workflow history only for the executions being returned.
+	type matchedExec struct {
+		workflowID string
+		runID      string
+		provider   string
+		status     string
+		closedAt   time.Time
+	}
+
+	var matches []matchedExec
 
 	for _, exec := range resp.Executions {
 		status := workflowStatus(exec.Status)
@@ -70,44 +83,52 @@ func queryFailedWorkflows(ctx context.Context, tc client.Client, namespace strin
 			continue
 		}
 
-		workflowID := exec.Execution.WorkflowId
-		runID := exec.Execution.RunId
+		matches = append(matches, matchedExec{
+			workflowID: exec.Execution.WorkflowId,
+			runID:      exec.Execution.RunId,
+			provider:   provider,
+			status:     status,
+			closedAt:   exec.CloseTime.AsTime(),
+		})
+	}
 
-		details, detailsErr := extractWorkflowDetails(ctx, tc, workflowID, runID)
+	if filter.Offset >= len(matches) {
+		return []*FailedNotification{}, nil
+	}
+	matches = matches[filter.Offset:]
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+
+	results := make([]*FailedNotification, 0, len(matches))
+
+	for _, m := range matches {
+		details, detailsErr := extractWorkflowDetails(ctx, s.tc, m.workflowID, m.runID)
 		if detailsErr != nil {
-			logger.Warn("could not extract workflow details from history",
-				slog.String("workflow_id", workflowID),
+			s.logger.Warn("could not extract workflow details from history",
+				slog.String("workflow_id", m.workflowID),
 				slog.Any("error", detailsErr),
 			)
 			details = &workflowDetails{}
 		}
 
-		closedAt := exec.CloseTime.AsTime()
-		lastAttemptAt := closedAt
+		lastAttemptAt := m.closedAt
 		if !details.lastAttemptAt.IsZero() {
 			lastAttemptAt = details.lastAttemptAt
 		}
 
 		results = append(results, &FailedNotification{
-			WorkflowID:    workflowID,
-			RunID:         runID,
+			WorkflowID:    m.workflowID,
+			RunID:         m.runID,
 			Recipient:     details.recipient,
 			Subject:       details.subject,
-			Provider:      provider,
+			Provider:      m.provider,
 			FailureReason: details.failureReason,
 			RetryCount:    details.retryCount,
 			LastAttemptAt: lastAttemptAt,
-			ClosedAt:      closedAt,
-			Status:        status,
+			ClosedAt:      m.closedAt,
+			Status:        m.status,
 		})
-	}
-
-	if filter.Offset >= len(results) {
-		return []*FailedNotification{}, nil
-	}
-	results = results[filter.Offset:]
-	if len(results) > limit {
-		results = results[:limit]
 	}
 
 	return results, nil

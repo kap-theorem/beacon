@@ -66,7 +66,7 @@ func TestDLQ_HandleQueryFailures_BadToDate(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
-func TestDLQ_HandleQueryFailures_LimitClamped(t *testing.T) {
+func TestDLQ_HandleQueryFailures_LimitPassedThrough(t *testing.T) {
 	fake := &fakeDLQ{failures: []*dlq.FailedNotification{}}
 	h := NewDLQHandler(fake, discardLogger())
 
@@ -75,7 +75,9 @@ func TestDLQ_HandleQueryFailures_LimitClamped(t *testing.T) {
 	h.HandleQueryFailures(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, 100, fake.gotFilter.Limit, "limit > 100 must be clamped to 100")
+	// Clamping is owned by the dlq service (QueryFailures caps limit at 100);
+	// the handler passes the raw value through.
+	assert.Equal(t, 999, fake.gotFilter.Limit)
 }
 
 func TestDLQ_HandleQueryFailures_QueryError(t *testing.T) {

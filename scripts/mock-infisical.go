@@ -12,7 +12,6 @@ import (
 var (
 	port    = flag.String("port", "8000", "Port to listen on")
 	fail    = flag.Int("fail-count", 0, "Number of initial failures (for retry testing)")
-	slowMs  = flag.Int("slow-ms", 0, "Add latency in milliseconds")
 	badJson = flag.Bool("bad-json", false, "Return invalid JSON")
 )
 
@@ -23,7 +22,7 @@ func main() {
 
 	http.HandleFunc("/api/v4/secrets", handleSecrets)
 	fmt.Printf("Mock Infisical server listening on :%s\n", *port)
-	fmt.Printf("Config: fail-count=%d, slow-ms=%d, bad-json=%v\n", *fail, *slowMs, *badJson)
+	fmt.Printf("Config: fail-count=%d, bad-json=%v\n", *fail, *badJson)
 
 	if err := http.ListenAndServe(":"+*port, nil); err != nil {
 		panic(err)
@@ -50,32 +49,30 @@ func handleSecrets(w http.ResponseWriter, r *http.Request) {
 		{
 			"secretKey": "sendgrid",
 			"secretValue": mustMarshal(map[string]any{
-				"name":         "sendgrid",
-				"provider":     "sendgrid",
-				"host":         "smtp.sendgrid.net",
-				"port":         587,
-				"username":     "apikey",
-				"password":     "SG.test-key-12345",
-				"auth_type":    "PLAIN",
-				"tls":          map[string]any{"enabled": true, "server_name": "smtp.sendgrid.net"},
-				"timeout":      "30s",
-				"max_retries":  3,
-				"max_per_hour": 0,
+				"name":       "sendgrid",
+				"provider":   "sendgrid",
+				"host":       "smtp.sendgrid.net",
+				"port":       587,
+				"username":   "apikey",
+				"password":   "SG.test-key-12345",
+				"auth_type":  "PLAIN",
+				"tls":        map[string]any{"enabled": true, "server_name": "smtp.sendgrid.net"},
+				"timeout":    "30s",
+				"is_default": true,
 			}),
 		},
 		{
 			"secretKey": "mailgun",
 			"secretValue": mustMarshal(map[string]any{
-				"name":        "mailgun",
-				"provider":    "mailgun",
-				"host":        "smtp.mailgun.org",
-				"port":        587,
-				"username":    "postmaster@mg.example.com",
-				"password":    "mg-test-key",
-				"auth_type":   "PLAIN",
-				"tls":         map[string]any{"enabled": true, "server_name": "smtp.mailgun.org"},
-				"timeout":     "25s",
-				"max_retries": 2,
+				"name":      "mailgun",
+				"provider":  "mailgun",
+				"host":      "smtp.mailgun.org",
+				"port":      587,
+				"username":  "postmaster@mg.example.com",
+				"password":  "mg-test-key",
+				"auth_type": "PLAIN",
+				"tls":       map[string]any{"enabled": true, "server_name": "smtp.mailgun.org"},
+				"timeout":   "25s",
 			}),
 		},
 		{

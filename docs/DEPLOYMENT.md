@@ -54,7 +54,7 @@ Downstream services (auth-service, app-backend, …)
 |   :7233                   |         +---------------------------+
 +---------------------------+
          |
-         | Temporal task queue  email-task-queue
+         | Temporal task queues  email-<provider>-queue
          v
 +---------------------------+   +---------------------------+
 |  beacon-worker-sendgrid   |   |  beacon-worker-mailgun    |  (one per provider)
@@ -178,8 +178,6 @@ Example secret value for the key `sendgrid-transactional`:
     "server_name": "smtp.sendgrid.net"
   },
   "timeout": "30s",
-  "max_retries": 3,
-  "max_per_hour": 0,
   "categories": ["transactional", "otp"],
   "is_default": true
 }
@@ -207,6 +205,25 @@ See `infisical-example.json` in the repository root for the full structure of bo
    - `CLIENT_SECRET` → set as `INFISICAL_CLIENT_SECRET`
 3. Grant the identity read access to your project for the target environment.
 4. Note your project's **Project ID** from the project settings page.
+
+### Verify Infisical credentials
+
+If Beacon fails to load config at startup, verify the machine identity works outside Beacon:
+
+```bash
+# 1. Exchange the machine identity for an access token
+curl -s -X POST "$INFISICAL_ADDR/api/v1/auth/universal-auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"clientId": "'$INFISICAL_CLIENT_ID'", "clientSecret": "'$INFISICAL_CLIENT_SECRET'"}'
+# Expect a JSON response containing "accessToken"
+
+# 2. Fetch the SMTP secrets with that token
+curl -s -H "Authorization: Bearer <accessToken-from-step-1>" \
+  "$INFISICAL_ADDR/api/v4/secrets?projectId=$INFISICAL_PROJECT_ID&environment=prod&secretPath=/beacon/smtp"
+# Expect a JSON response containing a "secrets" array with one entry per provider
+```
+
+If step 1 fails, re-check the client ID/secret; if step 2 fails, re-check the identity's project access, the environment slug, and the `/beacon/smtp` path.
 
 ---
 
@@ -283,7 +300,7 @@ Then bring up the new worker:
 docker compose -f deploy/docker-compose.yml up -d beacon-worker-mailgun
 ```
 
-Each worker instance polls the same Temporal task queue (`email-task-queue`) and routes delivery through the SMTP config loaded from Infisical for the provider name set in `PROVIDER_NAME`.
+Each worker instance polls its provider-specific Temporal task queue (`email-<provider>-queue`, derived from `PROVIDER_NAME`) and routes delivery through the SMTP config loaded from Infisical for the provider name set in `PROVIDER_NAME`.
 
 ### Systemd path
 
@@ -427,9 +444,9 @@ The only protection currently in place is network-layer enforcement via Cloudfla
 
 If the Cloudflare Access policy is misconfigured, momentarily bypassed, or the beacon-server port is reachable on an internal network without equivalent controls, any client can send arbitrary email through Beacon.
 
-Future work to add per-service API-key authentication at the application layer is fully designed and documented in `docs/future-scope.md`. That design would make a compromised Cloudflare policy insufficient on its own to abuse the relay.
+Per-service API-key authentication at the application layer is planned; it would make a compromised Cloudflare policy insufficient on its own to abuse the relay.
 
-**Admin and DLQ endpoints** (`/admin/config/refresh`, `/dlq/failed`, `/dlq/replay/*`) are additionally protected by the `ADMIN_TOKEN` bearer check in `server.env`. Do not leave `ADMIN_TOKEN` unset; an unset token disables these endpoints entirely (returns 403).
+**Admin endpoint**: only `POST /admin/config/refresh` is protected by the `ADMIN_TOKEN` bearer check in `server.env` (an unset token disables that endpoint — returns 403). The **DLQ endpoints** (`/dlq/failed`, `/dlq/replay/*`) are unauthenticated at the application layer; the Cloudflare Access policy on `/dlq/*` (Section 6) is their intended perimeter.
 
 ---
 
@@ -563,7 +580,7 @@ docker compose -f deploy/docker-compose.yml start postgresql temporal temporal-u
 
 ### Scaling workers
 
-Each provider needs exactly one worker instance per task-queue poller. To handle higher throughput for a single provider, run multiple instances of the same worker — all instances of `beacon-worker-sendgrid` (or `beacon-worker@sendgrid`) poll the same `email-task-queue` and Temporal distributes work across them.
+Each provider needs exactly one worker instance per task-queue poller. To handle higher throughput for a single provider, run multiple instances of the same worker — all instances of `beacon-worker-sendgrid` (or `beacon-worker@sendgrid`) poll the same provider queue (`email-sendgrid-queue`) and Temporal distributes work across them.
 
 **Docker Compose** — use `--scale` (the service must not have a fixed container name):
 
