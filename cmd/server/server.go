@@ -2,6 +2,7 @@ package main
 
 import (
 	"beacon/internal/api"
+	"beacon/internal/app"
 	confpkg "beacon/internal/config"
 	"beacon/internal/dlq"
 	"beacon/internal/notifier"
@@ -12,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -56,12 +56,7 @@ func main() {
 	}()
 
 	// ConfigWatcher: poll interval defaults to 300 s, overridden by CONFIG_POLL_INTERVAL (seconds).
-	pollInterval := 300 * time.Second
-	if raw := os.Getenv("CONFIG_POLL_INTERVAL"); raw != "" {
-		if secs, parseErr := strconv.Atoi(raw); parseErr == nil && secs > 0 {
-			pollInterval = time.Duration(secs) * time.Second
-		}
-	}
+	pollInterval := app.ParsePollInterval(os.Getenv("CONFIG_POLL_INTERVAL"), 300*time.Second)
 	watcher := confpkg.NewConfigWatcher(confpkg.GetConfigService(), pollInterval, func(b *confpkg.ConfigBundle) {
 		if reloadErr := registry.Reload(b); reloadErr != nil {
 			logger.Error("registry reload failed", slog.Any("error", reloadErr))
@@ -83,38 +78,26 @@ func main() {
 		temporalClient = tc
 	}
 
-	email := &api.EmailHandler{
-		TemporalClient: temporalClient,
-		Registry:       registry,
-	}
-
-	adminHandler := api.NewAdminHandler(confpkg.GetConfigService(), registry, logger)
-
-	healthChecker := confpkg.NewHealthChecker()
-	healthChecker.SetReady(true)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/notify/email", email.HandleRequest)
-	mux.HandleFunc("/healthz/live", healthChecker.HandleLive)
-	mux.HandleFunc("/healthz/ready", healthChecker.HandleReady)
-	mux.HandleFunc("/admin/config/refresh", adminHandler.HandleConfigRefresh)
-
+	var dlqSvc api.DLQQuerier
 	if temporalClient != nil {
 		namespace := os.Getenv("TEMPORAL_NAMESPACE")
 		if namespace == "" {
 			namespace = "default"
 		}
-		dlqService := dlq.NewDLQService(temporalClient, namespace, logger)
-		dlqHandler := api.NewDLQHandler(dlqService, logger)
-		mux.HandleFunc("/dlq/failed", dlqHandler.HandleQueryFailures)
-		mux.HandleFunc("/dlq/replay/", dlqHandler.HandleReplay)
-	} else {
-		unavailable := func(w http.ResponseWriter, r *http.Request) {
-			utils.WriteError(w, http.StatusServiceUnavailable, "temporal service not available")
-		}
-		mux.HandleFunc("/dlq/failed", unavailable)
-		mux.HandleFunc("/dlq/replay/", unavailable)
+		dlqSvc = dlq.NewDLQService(temporalClient, namespace, logger)
 	}
+
+	healthChecker := confpkg.NewHealthChecker()
+	healthChecker.SetReady(true)
+
+	mux := app.BuildServerMux(app.ServerDeps{
+		TemporalClient: temporalClient,
+		Registry:       registry,
+		ConfigService:  confpkg.GetConfigService(),
+		Health:         healthChecker,
+		DLQService:     dlqSvc,
+		Logger:         logger,
+	})
 
 	addr := ":" + port
 	logger.Info("HTTP server starting", slog.String("addr", addr))

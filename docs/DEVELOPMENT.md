@@ -51,3 +51,19 @@ make clean
 ```
 
 Both the HTTP server and the email worker must be running for email delivery to work.
+
+## Testing
+
+```bash
+# All unit tests
+make test
+
+# Coverage gate — enforces ≥90% across internal/ and utils
+make cover
+
+# HTML coverage report written to coverage.html
+make cover-html
+
+# Integration tests — require a reachable Temporal at localhost:7233
+make test-integration
+```

@@ -25,19 +25,19 @@ type RuleSet struct {
 }
 
 type SMTPClientConfig struct {
-	Name       string        `json:"name"`
-	Provider   string        `json:"provider"`
-	Host       string        `json:"host"`
-	Port       int           `json:"port"`
-	Username   string        `json:"username"`
-	Password   string        `json:"-"`
-	APIKey     string        `json:"-"`
-	AuthType   AuthType      `json:"auth_type"`
-	TLS        TLSConfig     `json:"tls"`
-	Timeout    time.Duration `json:"timeout"`
-	MaxRetries int           `json:"max_retries"`
-	MaxPerHour int           `json:"max_per_hour"`
-	Rules      RuleSet       `json:"rules,omitempty"`
+	Name        string        `json:"name"`
+	Provider    string        `json:"provider"`
+	Host        string        `json:"host"`
+	Port        int           `json:"port"`
+	Username    string        `json:"username"`
+	Password    string        `json:"-"`
+	APIKey      string        `json:"-"`
+	AuthType    AuthType      `json:"auth_type"`
+	TLS         TLSConfig     `json:"tls"`
+	Timeout     time.Duration `json:"timeout"`
+	MaxRetries  int           `json:"max_retries"`
+	MaxPerHour  int           `json:"max_per_hour"`
+	Rules       RuleSet       `json:"rules,omitempty"`
 	Categories  []string      `json:"categories,omitempty"`
 	IsDefault   bool          `json:"is_default,omitempty"`
 	FromAddress string        `json:"from_address,omitempty"`
@@ -88,7 +88,7 @@ type ProviderInfo struct {
 type ConfigLoadedCallback func(bundle *ConfigBundle, err error)
 
 var (
-	ErrProviderNotFound    = fmt.Errorf("provider not found")
+	ErrProviderNotFound     = fmt.Errorf("provider not found")
 	ErrConfigNotInitialized = fmt.Errorf("config service not initialized")
 )
 
@@ -96,9 +96,9 @@ var (
 func (c *SMTPClientConfig) UnmarshalJSON(data []byte) error {
 	type Alias SMTPClientConfig
 	aux := &struct {
-		Timeout string `json:"timeout"`
+		Timeout  string `json:"timeout"`
 		Password string `json:"password"`
-		APIKey  string `json:"api_key"`
+		APIKey   string `json:"api_key"`
 		*Alias
 	}{
 		Alias: (*Alias)(c),

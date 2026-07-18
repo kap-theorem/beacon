@@ -29,60 +29,89 @@ If `ADMIN_TOKEN` is not set on the server the endpoint returns HTTP 403 (disable
 
 ---
 
-## Response envelope
+## Response Envelope
 
-All non-health endpoints return JSON using the same envelope:
-
-```json
-{
-  "success": true | false,
-  "message": "optional human-readable summary",
-  "data":    { ... },      // present on success
-  "error":   "..."         // present on failure
-}
-```
-
-Health endpoints return plain text (`ok` / `ready` / `not ready`).
-
----
-
-## Endpoints
-
----
-
-### POST /notify/email
-
-Dispatch an email via a Temporal workflow.
-
-#### Request body
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `to` | string (email) | Yes | Recipient address |
-| `subject` | string | Yes | Email subject line |
-| `body` | string | No | Plain-text email body |
-| `client_hint` | string | No | Routing hint — provider category or exact provider name. Uses default provider when omitted. |
+All non-health responses use a common JSON envelope:
 
 ```json
 {
-  "to": "user@example.com",
-  "subject": "Your order has shipped",
-  "body": "Hi! Your package is on its way.",
-  "client_hint": "transactional"
+  "success": true,
+  "message": "human-readable summary",
+  "data": { ... }
 }
 ```
 
-#### Responses
+On error the envelope collapses to:
 
-| Status | Meaning |
-|---|---|
-| 202 | Workflow dispatched — `data.workflow_id` returned |
-| 400 | Missing required fields or routing error |
-| 405 | Method not allowed |
-| 500 | Temporal dispatch failed |
-| 503 | Temporal client not available |
+```json
+{
+  "success": false,
+  "error": "human-readable error message"
+}
+```
 
-**202 response `data` object**:
+Health endpoints return plain text, not JSON.
+
+---
+
+## Health Checks
+
+```
+GET /healthz/live
+GET /healthz/ready
+```
+
+These endpoints return plain text — not JSON.
+
+| Endpoint | 200 body | Notes |
+|---|---|---|
+| `/healthz/live` | `ok` | Liveness — process is alive; no external dependencies checked |
+| `/healthz/ready` | `ready` | Readiness — startup is complete (config loaded, registry built) |
+
+`/healthz/ready` returns `503 Service Unavailable` with body `not ready` during startup or after a fatal initialization failure.
+
+---
+
+## Send an Email
+
+```
+POST /notify/email
+Content-Type: application/json
+```
+
+**Request body:**
+
+```json
+{
+  "to": "recipient@example.com",
+  "subject": "Hello from Beacon",
+  "body": "This is the email body.",
+  "client_hint": "payments"
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `to` | Yes | Recipient email address (must be a valid RFC 5322 address) |
+| `subject` | Yes | Email subject |
+| `body` | No | Email body (plain text) |
+| `client_hint` | No | Routing category hint; selects the SMTP provider when multiple are configured. Omit to use the default provider. |
+
+**Response — 202 Accepted:**
+
+```json
+{
+  "success": true,
+  "message": "email notification triggered",
+  "data": {
+    "workflow_id": "email-workflow-recipient@example.com-1714567890123456789",
+    "workflow_run_id": "abc123-...",
+    "provider": "sendgrid"
+  }
+}
+```
+
+**202 response `data` object:**
 
 | Field | Type | Description |
 |---|---|---|
@@ -90,55 +119,133 @@ Dispatch an email via a Temporal workflow.
 | `workflow_run_id` | string | Temporal run ID |
 | `provider` | string | Email provider selected for this request |
 
+Beacon returns immediately after the workflow is started. Delivery happens asynchronously.
+
+**Error responses:**
+
+| Status | Condition | Error field value |
+|---|---|---|
+| `400 Bad Request` | Malformed JSON body | `"invalid request body"` |
+| `400 Bad Request` | Missing `to` field | `"missing required field: to"` |
+| `400 Bad Request` | Missing `subject` field | `"missing required field: subject"` |
+| `400 Bad Request` | Invalid email in `to` | `"invalid email address: to"` |
+| `400 Bad Request` | Unknown `client_hint` routing category | `"routing error: ..."` |
+| `405 Method Not Allowed` | Non-POST request | `"unsupported method"` |
+| `500 Internal Server Error` | Temporal workflow dispatch failed | `"failed to trigger email notification"` |
+| `503 Service Unavailable` | Temporal client not connected at startup | `"temporal service not available"` |
+
+---
+
+## Admin — Config Refresh
+
+```
+POST /admin/config/refresh
+Authorization: Bearer <ADMIN_TOKEN>
+```
+
+Forces an immediate re-fetch of SMTP provider configuration from Infisical and reloads the in-memory email client registry. Useful for propagating secret updates without waiting for the next background poll (default 300 s). Requires `ADMIN_TOKEN` to be set in the server's environment.
+
+**Auth semantics:**
+
+| Condition | Status | Error |
+|---|---|---|
+| `ADMIN_TOKEN` env var not set | `403 Forbidden` | `"admin endpoint disabled"` |
+| `ADMIN_TOKEN` set, header absent or wrong | `401 Unauthorized` | `"unauthorized"` |
+| Valid token | 200, 500, or 503 (see below) | — |
+
+**Response — 200 OK (production mode):**
+
 ```json
 {
   "success": true,
-  "message": "email notification triggered",
+  "message": "config refreshed",
   "data": {
-    "workflow_id": "email-workflow-user@example.com-1748900000000000000",
-    "workflow_run_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-    "provider": "sendgrid"
+    "revision": 42,
+    "providers": ["mailgun", "sendgrid"]
   }
 }
 ```
 
+**200 response `data` object:**
+
+| Field | Type | Description |
+|---|---|---|
+| `revision` | integer | Config revision after reload |
+| `providers` | string[] | Provider names active after reload |
+
+**Response — 503 Service Unavailable (DEV_MODE=true):**
+
+```json
+{
+  "success": false,
+  "error": "config refresh is not available in DEV_MODE"
+}
+```
+
+Config refresh is intentionally disabled in DEV_MODE because there is no Infisical backend to poll.
+
+**Other error responses:**
+
+| Status | Condition |
+|---|---|
+| `405 Method Not Allowed` | Non-POST request |
+| `500 Internal Server Error` | Infisical fetch or registry reload failed |
+
 ---
 
-## DLQ
+## DLQ — Query Failed Workflows
 
-### GET /dlq/failed
+```
+GET /dlq/failed
+```
 
-List closed Temporal workflow executions that ended in a terminal failure state
-(`Failed`, `TimedOut`, or `Canceled`).
+Returns closed Temporal workflow executions that ended in a failed, timed-out, or canceled state.
 
-#### Query parameters
+**Query parameters:**
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `status` | string | *(all)* | Filter by status: `Failed`, `TimedOut`, or `Canceled` |
-| `provider` | string | *(all)* | Filter by provider name |
-| `from` | string (RFC 3339) | *(unset)* | Inclusive start of close-time window |
-| `to` | string (RFC 3339) | *(unset)* | Inclusive end of close-time window |
-| `limit` | integer | 20 | Max results (capped at 100) |
-| `offset` | integer | 0 | Pagination offset |
+| Parameter | Type | Description |
+|---|---|---|
+| `status` | string | Filter by terminal status: `Failed`, `TimedOut`, or `Canceled`. Omit for all three. |
+| `provider` | string | Filter by SMTP provider name (e.g. `sendgrid`). |
+| `from` | RFC 3339 string | Inclusive start of the workflow close-time window. Defaults to 30 days ago. |
+| `to` | RFC 3339 string | Inclusive end of the workflow close-time window. Defaults to now. |
+| `limit` | integer | Max results to return (default 20, max 100). |
+| `offset` | integer | Pagination offset. |
 
-#### Responses
+**Response — 200 OK:**
 
-| Status | Meaning |
-|---|---|
-| 200 | Query successful |
-| 405 | Method not allowed |
-| 500 | Temporal query failed |
-| 503 | Temporal client not available |
+```json
+{
+  "success": true,
+  "message": "",
+  "data": {
+    "count": 2,
+    "failures": [
+      {
+        "workflow_id": "email-workflow-alice@example.com-1714567890123",
+        "run_id": "abc123-...",
+        "recipient": "alice@example.com",
+        "subject": "Your order has shipped",
+        "provider": "sendgrid",
+        "failure_reason": "SMTP connection refused",
+        "retry_count": 3,
+        "last_attempt_at": "2026-06-10T14:23:00Z",
+        "closed_at": "2026-06-10T14:23:05Z",
+        "status": "Failed"
+      }
+    ]
+  }
+}
+```
 
-**200 response `data` object**:
+**200 response `data` object:**
 
 | Field | Type | Description |
 |---|---|---|
 | `failures` | array | Array of `FailedNotification` objects |
 | `count` | integer | Number of items returned |
 
-**`FailedNotification` object**:
+**`FailedNotification` object:**
 
 | Field | Type | Description |
 |---|---|---|
@@ -153,166 +260,131 @@ List closed Temporal workflow executions that ended in a terminal failure state
 | `closed_at` | string (RFC 3339) | Timestamp workflow execution closed |
 | `status` | string | `Failed`, `TimedOut`, or `Canceled` |
 
-```json
-{
-  "success": true,
-  "data": {
-    "failures": [
-      {
-        "workflow_id": "email-workflow-user@example.com-1748900000000000000",
-        "run_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-        "recipient": "user@example.com",
-        "subject": "Your order has shipped",
-        "provider": "sendgrid",
-        "failure_reason": "SMTP connection refused",
-        "retry_count": 3,
-        "last_attempt_at": "2025-06-01T12:34:56Z",
-        "closed_at": "2025-06-01T12:35:10Z",
-        "status": "Failed"
-      }
-    ],
-    "count": 1
-  }
-}
-```
+**Error responses:**
+
+| Status | Condition |
+|---|---|
+| `400 Bad Request` | `from` or `to` value is not a valid RFC 3339 timestamp |
+| `405 Method Not Allowed` | Non-GET request |
+| `500 Internal Server Error` | Temporal history query failed |
+| `503 Service Unavailable` | Temporal client not connected at startup |
 
 ---
 
-### POST /dlq/replay/{workflowID}
+## DLQ — Replay a Failed Workflow
 
-Reads the original `EmailMessage` from a failed workflow's Temporal history and dispatches
-a **new** workflow execution with a fresh ID. The original execution is preserved.
+```
+POST /dlq/replay/{workflowID}
+```
 
-Only workflows in a terminal state (`Failed`, `TimedOut`, `Canceled`) can be replayed.
+Reads the original `EmailMessage` from the failed workflow's Temporal history and dispatches a **new** workflow execution using that input; the original execution is preserved. The new workflow ID is `replay-{workflowID}`. Only workflows in a terminal state (`Failed`, `TimedOut`, `Canceled`) can be replayed, and Temporal's `ALLOW_DUPLICATE_FAILED_ONLY` reuse policy prevents duplicate replays.
 
-#### Path parameter
+**Path parameter:**
 
-| Parameter | Type | Description |
-|---|---|---|
-| `workflowID` | string | Temporal workflow ID of the failed execution |
-
-#### Responses
-
-| Status | Meaning |
+| Parameter | Description |
 |---|---|
-| 202 | Replay dispatched — new `workflow_id` returned |
-| 400 | `workflowID` missing from path |
-| 404 | Workflow not found in Temporal |
-| 405 | Method not allowed |
-| 409 | Workflow is still running — replay not allowed |
-| 500 | Replay dispatch failed |
-| 503 | Temporal client not available |
+| `{workflowID}` | The `workflow_id` of the failed workflow to replay |
 
-**202 response `data` object** (`ReplayResult`):
-
-| Field | Type | Description |
-|---|---|---|
-| `new_workflow_id` | string | New Temporal workflow ID |
-| `new_run_id` | string | New Temporal run ID |
-| `original_workflow_id` | string | The ID passed in the path |
-| `provider` | string | Provider used for the replay |
+**Response — 202 Accepted:**
 
 ```json
 {
   "success": true,
   "message": "workflow replay dispatched",
   "data": {
-    "new_workflow_id": "replay-email-workflow-user@example.com-1748900000000000000-1748900001000000000",
-    "new_run_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
-    "original_workflow_id": "email-workflow-user@example.com-1748900000000000000",
+    "new_workflow_id": "replay-email-workflow-alice@example.com-1714567890123",
+    "new_run_id": "def456-...",
+    "original_workflow_id": "email-workflow-alice@example.com-1714567890123",
     "provider": "sendgrid"
   }
 }
 ```
 
----
-
-### POST /admin/config/refresh
-
-Forces an immediate re-fetch of all SMTP configurations from Infisical and reloads the
-in-memory `EmailClientRegistry`. Useful for propagating secret updates without waiting
-for the next background poll (default 300 s).
-
-**Requires**: `Authorization: Bearer <ADMIN_TOKEN>`
-
-#### Responses
-
-| Status | Meaning |
-|---|---|
-| 200 | Config reloaded successfully |
-| 401 | Token missing or does not match `ADMIN_TOKEN` |
-| 403 | Admin endpoint disabled (`ADMIN_TOKEN` not set) |
-| 405 | Method not allowed |
-| 500 | Infisical fetch or registry reload failed |
-
-**200 response `data` object**:
+**202 response `data` object (`ReplayResult`):**
 
 | Field | Type | Description |
 |---|---|---|
-| `revision` | integer | Infisical config revision after reload |
-| `providers` | string[] | Provider names active after reload |
+| `new_workflow_id` | string | New Temporal workflow ID (`replay-{workflowID}`) |
+| `new_run_id` | string | New Temporal run ID |
+| `original_workflow_id` | string | The ID passed in the path |
+| `provider` | string | Provider used for the replay |
 
-```json
-{
-  "success": true,
-  "message": "config refreshed",
-  "data": {
-    "revision": 42,
-    "providers": ["sendgrid", "mailgun"]
-  }
-}
-```
+**Error responses:**
 
----
-
-### GET /healthz/live
-
-Liveness probe. Returns HTTP 200 `ok` as long as the process is running.
-Safe to call frequently — no external dependencies checked.
-
-| Status | Body |
-|---|---|
-| 200 | `ok` |
-
----
-
-### GET /healthz/ready
-
-Readiness probe. Returns HTTP 200 once startup is complete (config loaded, registry built).
-Returns HTTP 503 during startup or after a fatal initialization failure.
-
-| Status | Body |
-|---|---|
-| 200 | `ready` |
-| 503 | `not ready` |
-
----
-
-## Error responses
-
-All error responses follow the envelope format:
-
-```json
-{
-  "success": false,
-  "error": "human-readable description"
-}
-```
-
-Common error messages:
-
-| HTTP | `error` value | Cause |
+| Status | Condition | Error field value |
 |---|---|---|
-| 400 | `missing required fields: to, subject` | Required fields absent in email request |
-| 400 | `routing error: ...` | `client_hint` could not be resolved to a provider |
-| 400 | `invalid request body` | Malformed JSON |
-| 400 | `workflow ID is required` | Empty path segment in `/dlq/replay/` |
-| 401 | `unauthorized` | Admin token mismatch |
-| 403 | `admin endpoint disabled` | `ADMIN_TOKEN` env var not set |
-| 404 | `workflow not found: <id>` | Workflow ID does not exist in Temporal |
-| 405 | `method not allowed` | Wrong HTTP method |
-| 409 | `workflow is still running; replay not allowed` | Non-terminal workflow state |
-| 500 | `failed to trigger email notification` | Temporal dispatch error |
-| 500 | `failed to query workflow failures` | Temporal history query error |
-| 500 | `replay failed` | Temporal replay dispatch error |
-| 503 | `temporal service not available` | Temporal client failed to connect at startup |
+| `400 Bad Request` | Missing workflow ID in path | `"workflow ID is required"` |
+| `404 Not Found` | Workflow ID does not exist in Temporal | `"workflow not found: <id>"` |
+| `405 Method Not Allowed` | Non-POST request | `"method not allowed"` |
+| `409 Conflict` | Workflow is still running (not in a terminal state) | `"workflow is still running; replay not allowed"` |
+| `409 Conflict` | A replay is already in progress for this workflow | `"replay already in progress for workflow: <id>"` |
+| `500 Internal Server Error` | Replay dispatch failed | `"replay failed"` |
+| `503 Service Unavailable` | Temporal client not connected at startup | `"temporal service not available"` |
+
+---
+
+## Consuming Beacon from an Upstream Service
+
+**Example — cURL:**
+
+```bash
+curl -X POST http://beacon-host:6969/notify/email \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "user@example.com",
+    "subject": "Your order has shipped",
+    "body": "Track your order at https://example.com/orders/123"
+  }'
+```
+
+**Example — Go:**
+
+```go
+payload := map[string]string{
+    "to":      "user@example.com",
+    "subject": "Your order has shipped",
+    "body":    "Track your order at https://example.com/orders/123",
+}
+body, _ := json.Marshal(payload)
+
+resp, err := http.Post("http://beacon-host:6969/notify/email", "application/json", bytes.NewReader(body))
+if err != nil {
+    // handle connection error
+}
+defer resp.Body.Close()
+
+if resp.StatusCode == http.StatusAccepted {
+    var result struct {
+        Success bool `json:"success"`
+        Data    struct {
+            WorkflowID    string `json:"workflow_id"`
+            WorkflowRunID string `json:"workflow_run_id"`
+            Provider      string `json:"provider"`
+        } `json:"data"`
+    }
+    json.NewDecoder(resp.Body).Decode(&result)
+    // email workflow started — delivery is async
+}
+```
+
+**Example — Python:**
+
+```python
+import requests
+
+response = requests.post(
+    "http://beacon-host:6969/notify/email",
+    json={
+        "to": "user@example.com",
+        "subject": "Your order has shipped",
+        "body": "Track your order at https://example.com/orders/123",
+    }
+)
+
+if response.status_code == 202:
+    data = response.json()["data"]
+    print("workflow started:", data["workflow_id"])
+    print("provider:", data["provider"])
+```
+
+The `202 Accepted` response means the workflow was enqueued. Email delivery is asynchronous — the upstream service does not need to wait or poll.
