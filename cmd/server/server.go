@@ -8,7 +8,7 @@ import (
 	"beacon/internal/notifier"
 	"beacon/utils"
 	"context"
-	"log"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -45,7 +45,8 @@ func main() {
 	}
 	logger.Info("email client registry ready", slog.Any("providers", registry.ProviderNames()))
 
-	// Long-lived context — cancelled on SIGTERM/SIGINT to stop background goroutines.
+	// Long-lived context — cancelled on SIGTERM/SIGINT to stop background
+	// goroutines and trigger graceful HTTP server shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
@@ -100,6 +101,22 @@ func main() {
 	})
 
 	addr := ":" + port
+	srv := &http.Server{Addr: addr, Handler: mux}
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			logger.Error("graceful shutdown failed, forcing close", slog.Any("error", err))
+			_ = srv.Close()
+		}
+	}()
+
 	logger.Info("HTTP server starting", slog.String("addr", addr))
-	log.Fatal(http.ListenAndServe(addr, mux))
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logger.Error("HTTP server failed", slog.Any("error", err))
+		os.Exit(1)
+	}
+	logger.Info("HTTP server stopped")
 }

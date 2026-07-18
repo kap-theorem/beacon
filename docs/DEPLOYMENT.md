@@ -1,7 +1,8 @@
 # Beacon — Deployment Runbook
 
-**Target environment**: Self-hosted home server  
+**Target environment**: Self-hosted home server
 **Stack**: Self-hosted Temporal cluster (Postgres-backed) + per-provider Beacon workers + Beacon server + Cloudflare Tunnel
+**Last reconciled against code**: 2026-06-25 (branch `fix/known-issues`)
 
 ---
 
@@ -10,61 +11,74 @@
 1. [Overview and Topology](#1-overview-and-topology)
 2. [Prerequisites](#2-prerequisites)
 3. [Temporal Cluster Bring-Up](#3-temporal-cluster-bring-up)
-4. [Infisical Setup](#4-infisical-setup)
+4. [Infisical Setup — SMTP Providers and Routing](#4-infisical-setup--smtp-providers-and-routing)
 5. [Beacon Server and Per-Provider Workers](#5-beacon-server-and-per-provider-workers)
 6. [Cloudflare Tunnel](#6-cloudflare-tunnel)
-7. [Security Note](#7-security-note)
-8. [Observability](#8-observability)
-9. [Upgrade, Rollback, Backup, and Scaling](#9-upgrade-rollback-backup-and-scaling)
+7. [Onboarding a Downstream Service](#7-onboarding-a-downstream-service)
+8. [Security Model](#8-security-model)
+9. [Observability](#9-observability)
+10. [Upgrade, Rollback, Backup, and Scaling](#10-upgrade-rollback-backup-and-scaling)
 
 ---
 
 ## 1. Overview and Topology
 
-Beacon is an async email notification service. Upstream services submit notification requests over HTTPS through a Cloudflare Tunnel; the HTTP server enqueues Temporal workflows; per-provider workers execute SMTP delivery.
+Beacon is an async email notification service. Downstream services submit notification requests over HTTPS through a Cloudflare Tunnel; the HTTP server resolves the request to an SMTP provider and enqueues a Temporal workflow on **that provider's own task queue**; the worker for that provider executes SMTP delivery.
 
 ### Topology
 
 ```
-Downstream services (auth-service, app-backend, …)
-         |
-         | HTTPS  beacon.example.com
-         v
+Downstream services (auth-service, order-service, marketing-service, ...)
+        |
+        | HTTPS  https://beacon.example.com
+        v
++-------------------------------------------------------------+
+|  Cloudflare Tunnel (cloudflared)                            |
+|    /healthz/*    -> public (no Access policy)               |
+|    /notify/email -> Cloudflare Access (service token)       |
+|    /dlq/*        -> Cloudflare Access (service token)       |
+|    everything else (incl. /admin/*) -> HTTP 404             |
++-------------------------------------------------------------+
+        |
+        | http://beacon-server:6969  (private network only)
+        v
++-----------------------------------+
+|  Beacon HTTP Server               |
+|  cmd/server   port 6969           |
+|  resolves client_hint -> provider |
+|  -> task queue email-<name>-queue |
++-----------------------------------+
+        |
+        | gRPC :7233  (start workflow on the provider's task queue)
+        v
++---------------------------+        +---------------------------+
+|  Temporal Server          |<------>|  PostgreSQL :5432         |
+|  temporalio/auto-setup    |        |  (temporal persistence)   |
+|  :7233                    |        +---------------------------+
 +---------------------------+
-|   Cloudflare Tunnel       |
-|   (cloudflared)           |
-|   /healthz/*  — public    |
-|   /notify/email  \        |
-|   /dlq/*          > Access protected (service tokens)
-+---------------------------+
-         |
-         | http://beacon-server:6969  (internal)
-         v
-+---------------------------+
-|   Beacon HTTP Server      |
-|   cmd/server              |
-|   port 6969               |
-+---------------------------+
-         |
-         | gRPC  :7233
-         v
-+---------------------------+         +---------------------------+
-|   Temporal Server         |         |   PostgreSQL :5432        |
-|   temporalio/auto-setup   |<------->|   (temporal persistence)  |
-|   :7233                   |         +---------------------------+
-+---------------------------+
-         |
-         | Temporal task queue  email-task-queue
-         v
+        |
+        |  ONE task queue per provider name
+        |
+   email-sendgrid-              email-mailgun-
+   transactional-queue          marketing-queue
+        |                            |
+        v                            v
 +---------------------------+   +---------------------------+
-|  beacon-worker-sendgrid   |   |  beacon-worker-mailgun    |  (one per provider)
-|  cmd/email_worker         |   |  cmd/email_worker         |
-|  PROVIDER_NAME=sendgrid   |   |  PROVIDER_NAME=mailgun    |
+|  beacon-worker            |   |  beacon-worker            |
+|  PROVIDER_NAME=           |   |  PROVIDER_NAME=           |
+|  sendgrid-transactional   |   |  mailgun-marketing        |
 +---------------------------+   +---------------------------+
-         |                               |
-         v                               v
-   smtp.sendgrid.net              smtp.mailgun.org
+        |                            |
+        v                            v
+   smtp.sendgrid.net            smtp.mailgun.org
 ```
+
+> **Key invariant:** the task queue name is derived from the resolved provider's
+> `name` field as `email-<name>-queue` (see `notifier.TaskQueueFor`). There is **no**
+> single shared queue. Every provider that routing can select must have at least one
+> running worker whose `PROVIDER_NAME` equals that provider's `name`, or its
+> workflows will be enqueued but never delivered (they sit until the activity times
+> out). See [Section 5.1](#51-how-provider-name-routing-and-the-task-queue-connect).
 
 ### Deployment Options
 
@@ -106,7 +120,7 @@ useradd --system --no-create-home beacon
 docker build -t beacon:local .
 ```
 
-The multi-stage Dockerfile compiles both `server` and `email_worker` binaries from `cmd/server` and `cmd/email_worker` and copies them into a minimal `gcr.io/distroless/static-debian12:nonroot` image.
+The multi-stage Dockerfile (`golang:1.24` builder → `gcr.io/distroless/static-debian12:nonroot` runtime) compiles both `server` and `email_worker` binaries from `cmd/server` and `cmd/email_worker` and copies them into the minimal runtime image. The image `ENTRYPOINT` defaults to `/usr/local/bin/server`; the worker is selected by overriding `command` (the Compose file does this for you).
 
 ---
 
@@ -124,7 +138,7 @@ This starts three services:
 - `temporal` — `temporalio/auto-setup:1.25.2`, initialises the schema automatically on first boot, gRPC on `:7233`
 - `temporal-ui` — `temporalio/ui:2.31.2`, web UI on `:8080`
 
-The `temporal` service depends on `postgresql` being healthy (pg_isready passes) before starting. The first boot may take 30–60 seconds while `auto-setup` runs schema migrations.
+The `temporal` service depends on `postgresql` being healthy (`pg_isready` passes) before starting. The first boot may take 30–60 seconds while `auto-setup` runs schema migrations and creates the `default` namespace (`DEFAULT_NAMESPACE: default`).
 
 ### Verify the cluster
 
@@ -152,15 +166,15 @@ No changes to this file are needed for a standard deployment.
 
 ---
 
-## 4. Infisical Setup
+## 4. Infisical Setup — SMTP Providers and Routing
 
-Beacon reads SMTP provider configuration from Infisical at the path `/beacon/smtp`. Each secret under that path is one SMTP provider config.
+Beacon reads SMTP provider configuration from Infisical at the path `/beacon/smtp`. Each secret under that path is one SMTP provider config (a JSON-encoded `SMTPClientConfig`).
 
 ### Secret structure
 
 Each secret has:
-- **Key**: the provider name (e.g. `sendgrid-transactional`, `mailgun-marketing`)
-- **Value**: a JSON object matching the structure shown in `infisical-example.json`
+- **Key**: the provider name. By convention, set the Infisical secret key equal to the JSON `name` field below (e.g. `sendgrid-transactional`).
+- **Value**: a JSON object matching the structure shown in `infisical-example.json`.
 
 Example secret value for the key `sendgrid-transactional`:
 
@@ -181,20 +195,39 @@ Example secret value for the key `sendgrid-transactional`:
   "max_retries": 3,
   "max_per_hour": 0,
   "categories": ["transactional", "otp"],
+  "from_address": "noreply@example.com",
+  "from_name": "Example App",
   "is_default": true
 }
 ```
 
-### Rules
+### Field reference
 
-- Exactly one provider must have `"is_default": true`. Beacon uses this provider when no `client_hint` is given in an email request.
-- The `categories` array drives routing: when `POST /notify/email` includes a `client_hint`, Beacon resolves the provider whose `categories` list contains that hint. `categories: []` means the provider is never selected by hint.
-- The `provider` field (e.g. `"sendgrid"`, `"mailgun"`) must match the `PROVIDER_NAME` set on the corresponding worker instance.
+| Field | Required | Purpose |
+|---|---|---|
+| `name` | Yes | The internal provider key. **This is the value Beacon keys everything off** — routing returns it, the task queue is `email-<name>-queue`, and a worker's `PROVIDER_NAME` must equal it. Returned in the `202` response as `provider`. |
+| `provider` | Yes | A free-form provider label (e.g. `sendgrid`, `mailgun`). Validated as required but **not** used for routing or queue naming. |
+| `host`, `port` | Yes | SMTP endpoint. `port` must be 1–65535. |
+| `username` | Yes (non-OAuth2) | SMTP username. |
+| `password` / `api_key` | Yes (at least one) | SMTP credential. Both are write-only (never serialised back out). |
+| `auth_type` | Yes | One of `PLAIN`, `LOGIN`, `OAUTH2`. |
+| `tls` | No | `{ "enabled": true, "server_name": "..." }`. `server_name` is required when `enabled` is true. |
+| `timeout` | No | Go duration string (e.g. `"30s"`). Defaults to `30s` when omitted. |
+| `from_address`, `from_name` | Recommended | Used to build the `From` header. **If `from_address` is empty the `From` header is empty and most SMTP providers reject the message** — always set it for production providers. |
+| `categories` | No | Routing category strings this provider handles. A downstream service sends one of these as `client_hint`. `[]` (or absent) means the provider is never selected by hint. |
+| `is_default` | No | When `true`, requests with no `client_hint` (or an unrecognised one) route here. |
+| `max_per_hour`, `max_retries`, `rules` | No | Carried in config; rate-limit fields are not yet enforced by the delivery path. |
+
+### Routing rules
+
+- **Exactly one provider should have `"is_default": true`.** Beacon uses it when no `client_hint` is given, or when the given hint matches no provider's `categories`. (As a fallback, if only one provider is configured it is automatically the default even without the flag.)
+- The `categories` array drives hint routing: when `POST /notify/email` includes a `client_hint`, Beacon resolves the provider whose `categories` list contains that hint.
+- If a hint matches nothing **and** no default provider exists, the request returns `400 routing error: no email client for hint "..." and no default provider configured`.
 
 ### Create the secrets in Infisical
 
 1. Open your Infisical project and navigate to **Secrets** for the target environment (e.g. `prod`).
-2. Create a secret at path `/beacon/smtp` for each provider, using the provider name as the key and the JSON object above as the value.
+2. Create a secret at path `/beacon/smtp` for each provider, using the provider `name` as the key and the JSON object above as the value.
 3. Repeat for each additional provider (e.g. `mailgun-marketing` with `"is_default": false`).
 
 See `infisical-example.json` in the repository root for the full structure of both a default and a non-default provider.
@@ -208,11 +241,29 @@ See `infisical-example.json` in the repository root for the full structure of bo
 3. Grant the identity read access to your project for the target environment.
 4. Note your project's **Project ID** from the project settings page.
 
+> Beacon also supports legacy `INFISICAL_API_KEY` and `INFISICAL_TOKEN` auth, but machine-identity (client ID + secret) is preferred and is what the env templates use.
+
 ---
 
 ## 5. Beacon Server and Per-Provider Workers
 
-### Docker Compose path
+### 5.1 How provider name, routing, and the task queue connect
+
+This is the single most important thing to get right when standing up workers. The relationships, all keyed off the provider's `name` field:
+
+1. The config loader keys every provider by its JSON `name` field (`bundle.SMTP[name]`). The Infisical secret key and the `provider` field are **not** used for this.
+2. On `POST /notify/email`, the server resolves the request to a provider name:
+   - `client_hint` matches a provider's `categories` → that provider's `name`;
+   - `client_hint` empty or unmatched → the `is_default` provider's `name` (or the sole provider);
+   - otherwise → `400 routing error`.
+3. The resolved `name` determines the Temporal task queue: **`email-<name>-queue`** (`notifier.TaskQueueFor`).
+4. A worker serves exactly one provider, chosen by the `PROVIDER_NAME` env var, which **must equal that provider's `name`**. The worker subscribes to `email-<PROVIDER_NAME>-queue`. If `PROVIDER_NAME` is unset, the worker serves the `is_default` provider (or the sole provider).
+
+**Consequence:** for the example provider `name: "sendgrid-transactional"`, the task queue is `email-sendgrid-transactional-queue`, and its worker must run with `PROVIDER_NAME=sendgrid-transactional`. Multiple instances with the same `PROVIDER_NAME` share that one queue (this is how you scale a single provider). Different providers never share a queue.
+
+> The variable `EMAIL_NOTIFIER_TASK_QUEUE` is **not** read by the codebase — do not set it. The queue name is always derived at runtime.
+
+### 5.2 Docker Compose path
 
 Copy and fill the env templates:
 
@@ -253,7 +304,13 @@ CONFIG_POLL_INTERVAL=300
 
 Do not set `PROVIDER_NAME` in `worker.env`; it is injected per-service via the `environment:` block in `docker-compose.yml`.
 
-Start beacon-server and the sendgrid worker:
+> **Reconcile the shipped placeholder.** `deploy/docker-compose.yml` ships one worker
+> service, `beacon-worker-sendgrid`, with `PROVIDER_NAME: sendgrid`. The value `sendgrid`
+> is a placeholder. Change it to match the `name` of the provider you created in Infisical
+> (e.g. `sendgrid-transactional`). If `PROVIDER_NAME` does not match a configured provider
+> `name`, the worker exits at startup with `provider not found`.
+
+Start beacon-server and the worker:
 
 ```bash
 docker compose -f deploy/docker-compose.yml up -d beacon-server beacon-worker-sendgrid
@@ -261,7 +318,7 @@ docker compose -f deploy/docker-compose.yml up -d beacon-server beacon-worker-se
 
 #### Adding additional providers (Compose)
 
-Copy the `beacon-worker-sendgrid` service block in `deploy/docker-compose.yml` and change the service name and `PROVIDER_NAME` for each new provider:
+Copy the `beacon-worker-sendgrid` service block in `deploy/docker-compose.yml`, give it a unique service name, and set `PROVIDER_NAME` to the new provider's `name`:
 
 ```yaml
 beacon-worker-mailgun:
@@ -270,7 +327,7 @@ beacon-worker-mailgun:
   env_file:
     - ./env/worker.env
   environment:
-    PROVIDER_NAME: mailgun
+    PROVIDER_NAME: mailgun-marketing   # must equal the provider's "name" in Infisical
     TEMPORAL_ADDRESS: temporal:7233
   depends_on:
     - temporal
@@ -283,9 +340,9 @@ Then bring up the new worker:
 docker compose -f deploy/docker-compose.yml up -d beacon-worker-mailgun
 ```
 
-Each worker instance polls the same Temporal task queue (`email-task-queue`) and routes delivery through the SMTP config loaded from Infisical for the provider name set in `PROVIDER_NAME`.
+Each worker polls its own provider task queue (`email-<PROVIDER_NAME>-queue`) and routes delivery through the SMTP config loaded from Infisical for that provider name.
 
-### Systemd path
+### 5.3 Systemd path
 
 #### Prepare configuration
 
@@ -316,12 +373,13 @@ systemctl daemon-reload
 # Enable and start the server
 systemctl enable --now beacon-server
 
-# Enable and start one worker per provider (template unit — %i expands to instance name)
-systemctl enable --now beacon-worker@sendgrid
-systemctl enable --now beacon-worker@mailgun
+# Enable and start one worker per provider. The instance name (after @) becomes
+# PROVIDER_NAME, so it MUST equal the provider's "name" field in Infisical.
+systemctl enable --now beacon-worker@sendgrid-transactional
+systemctl enable --now beacon-worker@mailgun-marketing
 ```
 
-The `beacon-worker@.service` template unit sets `Environment=PROVIDER_NAME=%i`, so `beacon-worker@sendgrid` automatically sets `PROVIDER_NAME=sendgrid` and `beacon-worker@mailgun` sets `PROVIDER_NAME=mailgun`. The shared `/etc/beacon/worker.env` is loaded for all instances.
+The `beacon-worker@.service` template unit sets `Environment=PROVIDER_NAME=%i`, so `beacon-worker@sendgrid-transactional` runs with `PROVIDER_NAME=sendgrid-transactional` (subscribing to `email-sendgrid-transactional-queue`). The shared `/etc/beacon/worker.env` is loaded for all instances.
 
 Both units run as the `beacon` system user with `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, and `PrivateTmp` hardening.
 
@@ -334,7 +392,7 @@ systemctl daemon-reload
 systemctl enable --now cloudflared
 ```
 
-The cloudflared unit runs as the `cloudflared` user. Create that user and ensure the credentials file and config are readable by it:
+The cloudflared unit runs `cloudflared tunnel --config /etc/cloudflared/config.yml run` as the `cloudflared` user. Create that user and ensure the credentials file and config are readable by it:
 
 ```bash
 useradd --system --no-create-home cloudflared
@@ -394,6 +452,10 @@ ingress:
   - service: http_status:404
 ```
 
+> Note the catch-all `http_status:404`: only `/healthz/*`, `/notify/email`, and `/dlq/*`
+> are reachable through the tunnel. **`/admin/config/refresh` is intentionally not routed**,
+> so the admin endpoint is reachable only on the private network, not via the public hostname.
+
 For the Docker Compose path, place the credentials file and updated config under `deploy/cloudflared/` (this directory is bind-mounted into the `cloudflared` container as `/etc/cloudflared`):
 
 ```bash
@@ -404,60 +466,192 @@ For the systemd path, copy both files to `/etc/cloudflared/` before starting the
 
 ### Create a Cloudflare Access application
 
-This step is mandatory before exposing `/notify/email` or `/dlq/*` publicly. Without it, `/notify/email` is an open relay reachable by any client that can reach the tunnel hostname.
+This step is mandatory before exposing `/notify/email` or `/dlq/*` publicly. Without it, `/notify/email` is an open relay and `/dlq/*` exposes recipient/subject metadata and re-send (replay) to any client that can reach the tunnel hostname.
 
 1. In the Cloudflare Zero Trust dashboard, go to **Access → Applications → Add an application**.
 2. Select **Self-Hosted**.
 3. Set the application domain to `beacon.example.com` and the path to `/notify/email`. Repeat for `/dlq/*` (or create one application covering both paths via a wildcard if your plan supports it).
 4. Under **Policies**, add a policy requiring a **Service Token**.
-5. Go to **Access → Service Auth → Service Tokens** and create a token for each downstream service that needs to call Beacon. Record the `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers; downstream services must include both headers on every request.
+5. Go to **Access → Service Auth → Service Tokens** and create a token **per downstream service** that needs to call Beacon. Record the `CF-Access-Client-Id` and `CF-Access-Client-Secret`; downstream services must include both headers on every request (see [Section 7](#7-onboarding-a-downstream-service)).
 
-The ingress rule in `deploy/cloudflared/config.yml` routes `/healthz/*` to beacon-server without any Access policy — health probes from infrastructure tooling do not require authentication. All other paths either require an Access policy (via the application you just created) or return 404 (catch-all).
-
----
-
-## 7. Security Note
-
-Beacon has no application-layer authentication as of this release. The `/notify/email` endpoint accepts any well-formed request that reaches the server, making it an open relay at the application layer.
-
-The only protection currently in place is network-layer enforcement via Cloudflare Access service tokens (described in Section 6). This is appropriate for a trusted single-operator home-server deployment where:
-
-- The Cloudflare Access policy is correctly configured before the tunnel is activated
-- No other path bypasses the tunnel (i.e. the beacon-server port is not directly exposed to the internet)
-
-If the Cloudflare Access policy is misconfigured, momentarily bypassed, or the beacon-server port is reachable on an internal network without equivalent controls, any client can send arbitrary email through Beacon.
-
-Future work to add per-service API-key authentication at the application layer is fully designed and documented in `docs/future-scope.md`. That design would make a compromised Cloudflare policy insufficient on its own to abuse the relay.
-
-**Admin and DLQ endpoints** (`/admin/config/refresh`, `/dlq/failed`, `/dlq/replay/*`) are additionally protected by the `ADMIN_TOKEN` bearer check in `server.env`. Do not leave `ADMIN_TOKEN` unset; an unset token disables these endpoints entirely (returns 403).
+The ingress rule routes `/healthz/*` without any Access policy — health probes from infrastructure tooling do not require authentication. All other reachable paths must be covered by the Access application; anything else returns 404 (catch-all).
 
 ---
 
-## 8. Observability
+## 7. Onboarding a Downstream Service
+
+This section is the end-to-end runbook for letting a new upstream service (auth service, order service, marketing system, …) send email through Beacon. It has two halves: **operator-side Beacon configuration** and the **downstream call contract**.
+
+For the complete API reference (every status code, response body, retry/DLQ semantics, and Go/Python client examples), see [`docs/INTEGRATION.md`](./INTEGRATION.md). This section is the deployment-facing summary plus the operator steps that `INTEGRATION.md` does not cover.
+
+### 7.1 Beacon-side setup (operator)
+
+Do this before the downstream team sends its first request.
+
+**Step 1 — Decide the routing category.** Agree with the downstream team on the `client_hint` value their service will send. Examples:
+
+| Downstream service | `client_hint` |
+|---|---|
+| Auth service (OTPs) | `otp` |
+| Order service (receipts) | `transactional` |
+| Marketing system | `marketing` |
+
+A service that does not need category routing can omit `client_hint` entirely and rely on the default provider.
+
+**Step 2 — Make sure a provider handles that category.** In Infisical at `/beacon/smtp`, ensure some provider's `categories` array contains the agreed hint (see [Section 4](#4-infisical-setup--smtp-providers-and-routing)). Either extend an existing provider's `categories`, or add a new provider. Config is hot-reloaded from Infisical every `CONFIG_POLL_INTERVAL` seconds (default 300); to apply it immediately, call the admin refresh endpoint from the private network:
+
+```bash
+curl -X POST http://beacon-server:6969/admin/config/refresh \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+# 200 -> {"success":true,"message":"config refreshed","data":{"revision":N,"providers":[...]}}
+```
+
+**Step 3 — Ensure a worker is running for that provider.** Delivery only happens if a worker with `PROVIDER_NAME=<provider name>` is polling `email-<name>-queue`. If Step 2 added a *new* provider, start a new worker for it ([Section 5.2](#52-docker-compose-path) / [5.3](#53-systemd-path)). If the category was added to an existing provider that already has a worker, no new worker is needed.
+
+**Step 4 — Issue a Cloudflare Access service token for the service.** In **Access → Service Auth → Service Tokens**, create a token named for the downstream service (e.g. `svc-auth`). Add it to the Access policy on the `/notify/email` application (and `/dlq/*` if the service needs to query/replay its own failures). Record the two header values:
+
+- `CF-Access-Client-Id`
+- `CF-Access-Client-Secret`
+
+**Step 5 — Hand off to the downstream team.** Provide:
+
+- Base URL: `https://beacon.example.com`
+- The `CF-Access-Client-Id` and `CF-Access-Client-Secret` for their service
+- The agreed `client_hint` value (or "omit it; default provider is used")
+
+> There is **no per-service record inside Beacon today** — the application layer does not
+> know which service is calling. A service's identity and reachability are enforced entirely
+> by its Cloudflare Access service token, and the provider it lands on is decided by
+> `client_hint`. Planned per-service API-key auth is documented in
+> [`docs/future-scope.md`](./future-scope.md); see [Section 8](#8-security-model).
+
+### 7.2 Downstream call contract
+
+**Endpoint:** `POST /notify/email`
+
+**Headers (through the Cloudflare Tunnel):**
+
+| Header | Value | Required |
+|---|---|---|
+| `Content-Type` | `application/json` | Yes |
+| `CF-Access-Client-Id` | the service token client id | Yes (via tunnel) |
+| `CF-Access-Client-Secret` | the service token client secret | Yes (via tunnel) |
+
+The two `CF-Access-*` headers are required when calling through `https://beacon.example.com`. They are **not** required (and not understood) when calling beacon-server directly on the private network at `http://beacon-server:6969`.
+
+**Request body:**
+
+```json
+{
+  "to":          "recipient@example.com",
+  "subject":     "Your verification code",
+  "body":        "Your code is 482910. It expires in 10 minutes.",
+  "client_hint": "otp"
+}
+```
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `to` | string | Yes | Recipient address. Trimmed, then validated as an RFC 5322 address. |
+| `subject` | string | Yes | Must be non-empty. |
+| `body` | string | No | Plain-text body. Empty if omitted. |
+| `client_hint` | string | No | Routing category. Absent/unrecognised → default provider. |
+
+**Success — `202 Accepted`:**
+
+```json
+{
+  "success": true,
+  "message": "email notification triggered",
+  "data": {
+    "provider":        "sendgrid-transactional",
+    "workflow_id":     "email-workflow-recipient@example.com-1782351841675718000",
+    "workflow_run_id": "019efc72-c98d-7a0a-b07c-24bcf2f245f3"
+  }
+}
+```
+
+`202` means the delivery workflow is durably enqueued — **not** that the email was delivered. Save `workflow_id` if the service may later need to query or replay via the DLQ API. Error responses (`400`/`405`/`500`/`503`) use `{"success": false, "error": "..."}`; see `docs/INTEGRATION.md` Section 4 for the full table.
+
+### 7.3 End-to-end example (via the tunnel)
+
+```bash
+curl -s -X POST https://beacon.example.com/notify/email \
+  -H "Content-Type: application/json" \
+  -H "CF-Access-Client-Id:     ${CF_ACCESS_CLIENT_ID}" \
+  -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
+  -d '{
+    "to":          "alice@example.com",
+    "subject":     "Your verification code",
+    "body":        "Your code is 482910.",
+    "client_hint": "otp"
+  }'
+```
+
+A correctly configured request returns `202` with the JSON envelope above. If the `CF-Access-*` headers are missing or invalid, Cloudflare Access returns its own challenge/403 **before** the request reaches beacon-server. If the body is malformed or routing fails, beacon-server returns a `4xx` with `{"success": false, "error": "..."}`.
+
+---
+
+## 8. Security Model
+
+Beacon has **no application-layer authentication on the email or DLQ endpoints** as of this release. Specifically:
+
+| Endpoint | App-layer auth in code | Reachable via tunnel | Protected by |
+|---|---|---|---|
+| `GET /healthz/live`, `GET /healthz/ready` | none | yes (public) | — (intentionally public) |
+| `POST /notify/email` | **none** | yes | Cloudflare Access service token only |
+| `GET /dlq/failed` | **none** | yes | Cloudflare Access service token only |
+| `POST /dlq/replay/{id}` | **none** | yes | Cloudflare Access service token only |
+| `POST /admin/config/refresh` | **`ADMIN_TOKEN` bearer check** | **no** (not in ingress → 404) | `ADMIN_TOKEN` + private-network-only |
+
+> **Correction vs. earlier docs:** `ADMIN_TOKEN` protects **only** `POST /admin/config/refresh`.
+> The DLQ endpoints (`/dlq/failed`, `/dlq/replay/*`) do **not** check `ADMIN_TOKEN` — they
+> are protected solely by Cloudflare Access at the network layer. `/dlq/replay/*` can
+> re-send any failed email and `/dlq/failed` exposes recipient and subject metadata, so
+> treat the Access policy on `/dlq/*` as security-critical.
+
+Because `/notify/email` and `/dlq/*` have no app-layer auth, the perimeter relies entirely on **Cloudflare Tunnel + a correctly configured Cloudflare Access policy**. This is appropriate for a trusted single-operator home-server deployment where:
+
+- The Cloudflare Access policy is configured **before** the tunnel is activated;
+- The beacon-server port (`6969`) is not directly exposed to the internet — only the tunnel reaches it.
+
+If the Access policy is misconfigured or bypassed, or beacon-server's port is reachable on an internal network without equivalent controls, any client can send arbitrary email and query/replay the DLQ.
+
+**Admin endpoint.** `POST /admin/config/refresh` requires `Authorization: Bearer <ADMIN_TOKEN>`. When `ADMIN_TOKEN` is unset the endpoint is disabled (returns `403`); with it set, a wrong/absent bearer returns `401`. It is also not routed through the tunnel (Section 6), so it is only reachable on the private network. Do not leave `ADMIN_TOKEN` unset if you intend to use config refresh.
+
+**Planned work.** Per-service API-key authentication at the application layer is fully designed in [`docs/future-scope.md`](./future-scope.md). Once implemented, each service would present `Authorization: Bearer bkn_svc_<key>` scoped to specific categories, so a compromised Cloudflare policy would no longer be sufficient on its own to abuse the relay.
+
+---
+
+## 9. Observability
 
 ### Temporal UI
 
 | Path | Description |
 |------|-------------|
-| `http://<host>:8080` | Temporal UI — workflow list, history, task queue status |
+| `http://<host>:8080` | Temporal UI — workflow list, history, task-queue pollers |
 
 The Temporal UI is bound to `localhost:8080` by the Docker Compose port mapping. Do not expose port 8080 directly to the internet. Access it via SSH port-forwarding or an internal network only.
 
+Use the UI to confirm a worker is actually polling its queue: open the `email-<name>-queue` task queue and check that pollers are present. A provider with no poller means workflows enqueue but never deliver.
+
 ### Health probes
 
-Both the server and worker expose health endpoints:
+**Only the server exposes HTTP health endpoints.** The worker is a Temporal worker process with no HTTP listener — observe it via the Temporal UI (poller presence) and process/journal status instead.
 
 ```bash
 # Liveness — server process is up
 curl http://<host>:6969/healthz/live
 # Expected: HTTP 200, body: ok
 
-# Readiness — server connected to Temporal and config loaded
+# Readiness
 curl http://<host>:6969/healthz/ready
 # Expected: HTTP 200, body: ready
 ```
 
-The Docker Compose `beacon-server` healthcheck calls `/healthz/ready` every 15 seconds.
+Readiness semantics: the server marks itself ready once it has started and **successfully loaded config** (it exits at startup if config cannot load, so a running server always has valid config). Readiness does **not** verify Temporal connectivity — the server starts even when Temporal is unreachable, in which case `/notify/email` and `/dlq/*` return `503 temporal service not available` until Temporal becomes reachable and the server is restarted.
+
+The Docker Compose `beacon-server` healthcheck calls `/healthz/ready` every 15 seconds (5 s timeout, 5 retries, 10 s start period).
 
 ### Logs
 
@@ -480,8 +674,8 @@ docker compose -f deploy/docker-compose.yml logs -f
 # Server
 journalctl -u beacon-server -f
 
-# Worker instance (e.g. sendgrid)
-journalctl -u beacon-worker@sendgrid -f
+# Worker instance (e.g. sendgrid-transactional)
+journalctl -u beacon-worker@sendgrid-transactional -f
 
 # All beacon units
 journalctl -u 'beacon-*' -f
@@ -490,9 +684,11 @@ journalctl -u 'beacon-*' -f
 journalctl -u cloudflared -f
 ```
 
+Both binaries log structured JSON to stdout (`slog`). The worker logs its resolved `provider` and `task_queue` at startup — a quick way to confirm `PROVIDER_NAME` resolved to the queue you expect.
+
 ---
 
-## 9. Upgrade, Rollback, Backup, and Scaling
+## 10. Upgrade, Rollback, Backup, and Scaling
 
 ### Upgrade (Docker Compose)
 
@@ -527,7 +723,7 @@ docker compose -f deploy/docker-compose.yml up -d --no-deps beacon-server beacon
 
 ```bash
 systemctl restart beacon-server
-systemctl restart beacon-worker@sendgrid
+systemctl restart beacon-worker@sendgrid-transactional
 ```
 
 ### PostgreSQL backup and restore
@@ -563,7 +759,7 @@ docker compose -f deploy/docker-compose.yml start postgresql temporal temporal-u
 
 ### Scaling workers
 
-Each provider needs exactly one worker instance per task-queue poller. To handle higher throughput for a single provider, run multiple instances of the same worker — all instances of `beacon-worker-sendgrid` (or `beacon-worker@sendgrid`) poll the same `email-task-queue` and Temporal distributes work across them.
+Each provider has its own task queue, `email-<name>-queue`. To handle higher throughput for a single provider, run multiple worker instances **with the same `PROVIDER_NAME`** — they all poll that provider's queue and Temporal distributes work across them.
 
 **Docker Compose** — use `--scale` (the service must not have a fixed container name):
 
@@ -571,16 +767,16 @@ Each provider needs exactly one worker instance per task-queue poller. To handle
 docker compose -f deploy/docker-compose.yml up -d --scale beacon-worker-sendgrid=3
 ```
 
-**Systemd** — the template unit does not support scaling a single instance name. Start additional instances with distinct names and a shared `PROVIDER_NAME` override:
+**Systemd** — the template unit does not support scaling a single instance name. Start additional instances with distinct names and the same `PROVIDER_NAME` override:
 
 ```bash
-# beacon-worker@sendgrid-2.service — create an override drop-in
-systemctl edit --force beacon-worker@sendgrid-2
+# Create an override drop-in for a second instance serving the same provider
+systemctl edit --force beacon-worker@sendgrid-transactional-2
 # In the editor, add:
 # [Service]
-# Environment=PROVIDER_NAME=sendgrid
+# Environment=PROVIDER_NAME=sendgrid-transactional
 
-systemctl enable --now beacon-worker@sendgrid-2
+systemctl enable --now beacon-worker@sendgrid-transactional-2
 ```
 
-To add a new provider in either deployment model, provision its SMTP credentials in Infisical under `/beacon/smtp` (following Section 4) and start a new worker instance with `PROVIDER_NAME` set to the new provider name. No changes to the beacon-server are required; config is hot-reloaded from Infisical every `CONFIG_POLL_INTERVAL` seconds.
+To add a **new provider** (rather than scale an existing one), provision its SMTP credentials in Infisical under `/beacon/smtp` (Section 4) and start a worker with `PROVIDER_NAME` set to the new provider's `name`. No changes to beacon-server are required; it hot-reloads config from Infisical every `CONFIG_POLL_INTERVAL` seconds (or immediately via `POST /admin/config/refresh`).
