@@ -4,6 +4,57 @@ Beacon is an async notification service built in Go. It currently supports email
 
 ---
 
+## Architecture
+
+```mermaid
+flowchart TB
+    US["Upstream service<br/>(any app that needs to send email)"]
+
+    subgraph SERVER["HTTP Server — cmd/server"]
+        MUX["Route wiring: BuildServerMux<br/>internal/app/server.go"]
+        EH["Email handler: POST /notify/email<br/>internal/api/email.go"]
+        AH["Admin handler: POST /admin/config/refresh<br/>internal/api/admin.go"]
+        DH["DLQ handlers: GET /dlq/failed, POST /dlq/replay<br/>internal/api/dlq.go"]
+        REG["EmailClientRegistry (provider routing)<br/>internal/notifier/registry.go"]
+        DLQS["DLQ service (query + replay)<br/>internal/dlq"]
+    end
+
+    TEMPORAL[("Temporal Server<br/>(external, localhost:7233)")]
+
+    subgraph WORKER["Email Worker — cmd/email_worker"]
+        WF["SendEmailWorkflow (retry policy)<br/>internal/temporal/workflow_email.go"]
+        ACT["SendEmailActivity<br/>internal/temporal/activities_email.go"]
+        ES["EmailService (SMTP sender)<br/>internal/notifier/email.go"]
+    end
+
+    subgraph SHARED["Shared by both processes"]
+        CFG["Config service + hot-reload watcher<br/>internal/config"]
+        MOD["EmailMessage model<br/>internal/models"]
+        UT["Temporal client factory, HTTP helpers<br/>utils/"]
+    end
+
+    INF[["Infisical secret store<br/>(or env vars in DEV_MODE)"]]
+    SMTP[["SMTP provider<br/>(e.g. Mailgun)"]]
+
+    US -->|"POST /notify/email"| MUX
+    MUX --> EH
+    MUX --> AH
+    MUX --> DH
+    EH -->|"pick provider via client_hint"| REG
+    EH -->|"start workflow, return 202"| TEMPORAL
+    DH --> DLQS
+    DLQS -->|"list failed / re-dispatch"| TEMPORAL
+    TEMPORAL -->|"dispatch task from email-provider-queue"| WF
+    WF --> ACT
+    ACT --> ES
+    ES -->|"send mail"| SMTP
+    CFG -->|"poll every 300s, hot-reload"| INF
+```
+
+The HTTP server never talks to SMTP and the worker never handles HTTP — Temporal sits in the middle, decoupling submission from delivery. See the [Architecture Overview](docs/ARCHITECTURE.md) for the request lifecycle and component inventory.
+
+---
+
 ## Documentation
 
 | Document | Description |
