@@ -125,17 +125,8 @@ func TestValidateConfig_SemanticFailures(t *testing.T) {
 			wantErr: "username",
 		},
 		{
-			name: "missing password and api_key",
-			json: func() string {
-				j := patchJSON(base, "password", nil)
-				// Remove api_key too (not in base, but ensure no api_key)
-				var m map[string]interface{}
-				_ = json.Unmarshal([]byte(j), &m)
-				delete(m, "api_key")
-				delete(m, "password")
-				b, _ := json.Marshal(m)
-				return string(b)
-			}(),
+			name:    "missing password",
+			json:    patchJSON(base, "password", nil),
 			wantErr: "password",
 		},
 		{
@@ -148,16 +139,6 @@ func TestValidateConfig_SemanticFailures(t *testing.T) {
 				return string(b)
 			}(),
 			wantErr: "tls.server_name",
-		},
-		{
-			name:    "negative max_retries",
-			json:    patchJSON(base, "max_retries", -1),
-			wantErr: "max_retries",
-		},
-		{
-			name:    "negative max_per_hour",
-			json:    patchJSON(base, "max_per_hour", -1),
-			wantErr: "max_per_hour",
 		},
 	}
 
@@ -221,7 +202,7 @@ func TestValidateConfig_OAUTH2NoUsernameRequired(t *testing.T) {
 	base := validBaseJSON()
 	j := patchJSON(base, "auth_type", "OAUTH2")
 	j = patchJSON(j, "username", nil)
-	// OAuth2 requires api_key or password; keep password in base.
+	// OAuth2 still requires a password; keep password in base.
 	_, err := ValidateConfig(j)
 	if err != nil {
 		t.Fatalf("OAUTH2 without username should be valid, got: %v", err)

@@ -218,18 +218,9 @@ func (cs *ConfigService) fetchConfigs(ctx context.Context, basePath string) (map
 	}
 
 	// Get authorization token
-	var token string
-	switch cs.authMethod {
-	case "client-secret":
-		var err error
-		token, err = cs.getAccessToken(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get access token: %w", err)
-		}
-	case "api-key":
-		token = cs.apiKey
-	default:
-		token = cs.apiKey
+	token, err := cs.getAccessToken(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get access token: %w", err)
 	}
 
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
@@ -250,9 +241,8 @@ func (cs *ConfigService) fetchConfigs(ctx context.Context, basePath string) (map
 
 	var result struct {
 		Secrets []struct {
-			Key     string `json:"secretKey"`
-			Value   string `json:"secretValue"`
-			Comment string `json:"secretComment"`
+			Key   string `json:"secretKey"`
+			Value string `json:"secretValue"`
 		} `json:"secrets"`
 	}
 
@@ -338,17 +328,6 @@ func (cs *ConfigService) GetRevision() int64 {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
 	return cs.revision
-}
-
-func (cs *ConfigService) GetCacheAge() time.Duration {
-	cs.mu.RLock()
-	defer cs.mu.RUnlock()
-
-	if cs.current == nil {
-		return -1
-	}
-
-	return time.Since(cs.current.Timestamp)
 }
 
 type TransientError struct {

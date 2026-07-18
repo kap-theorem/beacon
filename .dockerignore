@@ -5,3 +5,7 @@ covdata/
 aidlc-docs/
 docs/
 .worktrees/
+.env*
+deploy/
+.claude/
+*.md

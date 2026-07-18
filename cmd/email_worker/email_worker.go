@@ -11,7 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -49,14 +49,12 @@ func main() {
 
 	taskQueue := notifier.TaskQueueFor(providerName)
 
-	// EmailService is hot-swapped by the ConfigWatcher; guard with an RWMutex.
-	var emailSvcMu sync.RWMutex
-	emailSvc := notifier.NewEmailService(smtpCfg.Host, smtpCfg.Port, smtpCfg.Username, smtpCfg.Password, smtpCfg.FromAddress, smtpCfg.FromName)
+	// EmailService is hot-swapped by the ConfigWatcher via an atomic pointer.
+	var emailSvc atomic.Pointer[notifier.EmailService]
+	emailSvc.Store(notifier.NewEmailService(smtpCfg.Host, smtpCfg.Port, smtpCfg.Username, smtpCfg.Password, smtpCfg.FromAddress, smtpCfg.FromName))
 
 	getEmailService := func() notifier.Notifier[models.EmailMessage] {
-		emailSvcMu.RLock()
-		defer emailSvcMu.RUnlock()
-		return emailSvc
+		return emailSvc.Load()
 	}
 
 	c, err := utils.NewTemporalClient()
@@ -68,15 +66,9 @@ func main() {
 
 	w := worker.New(c, taskQueue, worker.Options{})
 
-	// Long-lived context — cancelled on SIGTERM to stop the ConfigWatcher.
-	watchCtx, watchCancel := context.WithCancel(context.Background())
+	// Long-lived context — cancelled on SIGTERM/SIGINT to stop the ConfigWatcher.
+	watchCtx, watchCancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer watchCancel()
-	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-		<-sigCh
-		watchCancel()
-	}()
 
 	pollInterval := app.ParsePollInterval(os.Getenv("CONFIG_POLL_INTERVAL"), 300*time.Second)
 
@@ -86,9 +78,7 @@ func main() {
 			logger.Error("config reload: provider not found", slog.String("provider", providerName), slog.Any("error", cfgErr))
 			return
 		}
-		emailSvcMu.Lock()
-		emailSvc = notifier.NewEmailService(newCfg.Host, newCfg.Port, newCfg.Username, newCfg.Password, newCfg.FromAddress, newCfg.FromName)
-		emailSvcMu.Unlock()
+		emailSvc.Store(notifier.NewEmailService(newCfg.Host, newCfg.Port, newCfg.Username, newCfg.Password, newCfg.FromAddress, newCfg.FromName))
 		logger.Info("email service reloaded", slog.String("provider", providerName))
 	}, logger)
 	go watcher.Start(watchCtx)

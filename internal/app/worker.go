@@ -21,15 +21,9 @@ func ResolveWorkerProvider(bundle *config.ConfigBundle, providerName string) (st
 		}
 		return providerName, cfg, nil
 	}
-	var last *config.SMTPClientConfig
-	for _, c := range bundle.SMTP {
-		if c.IsDefault {
-			return c.Name, c, nil
-		}
-		last = c
+	name := config.DefaultProviderName(bundle)
+	if name == "" {
+		return "", nil, fmt.Errorf("no provider resolved; set PROVIDER_NAME or mark one provider is_default")
 	}
-	if len(bundle.SMTP) == 1 {
-		return last.Name, last, nil
-	}
-	return "", nil, fmt.Errorf("no provider resolved; set PROVIDER_NAME or mark one provider is_default")
+	return name, bundle.SMTP[name], nil
 }

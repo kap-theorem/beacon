@@ -7,10 +7,8 @@ type NotifierType string
 
 // Message represents a notification message with generic data type.
 type Message[T any] struct {
-	ID       string
-	Type     NotifierType
-	Data     T
-	Metadata map[string]string
+	Type NotifierType
+	Data T
 }
 
 // Notifier defines the interface for sending notifications of

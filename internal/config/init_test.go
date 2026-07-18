@@ -385,29 +385,6 @@ func TestInitializeConfigService_ProdPath_ClientSecret(t *testing.T) {
 	t.Setenv("INFISICAL_CLIENT_ID", "client-id")
 	t.Setenv("INFISICAL_CLIENT_SECRET", "client-secret")
 	t.Setenv("INFISICAL_API_KEY", "")
-	t.Setenv("INFISICAL_TOKEN", "")
-
-	svc, err := InitializeConfigService(context.Background(), testLogger())
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if svc == nil {
-		t.Fatal("expected non-nil service")
-	}
-}
-
-func TestInitializeConfigService_ProdPath_LegacyToken(t *testing.T) {
-	srv := newInfisicalTestServer(t, "token-provider")
-	defer srv.Close()
-
-	t.Setenv("DEV_MODE", "")
-	t.Setenv("INFISICAL_ADDR", srv.URL)
-	t.Setenv("INFISICAL_PROJECT_ID", "test-project")
-	t.Setenv("INFISICAL_ENVIRONMENT", "prod")
-	t.Setenv("INFISICAL_TOKEN", "legacy-token")
-	t.Setenv("INFISICAL_API_KEY", "")
-	t.Setenv("INFISICAL_CLIENT_ID", "")
-	t.Setenv("INFISICAL_CLIENT_SECRET", "")
 
 	svc, err := InitializeConfigService(context.Background(), testLogger())
 	if err != nil {
@@ -427,7 +404,6 @@ func TestInitializeConfigService_ProdPath_NoCredentials(t *testing.T) {
 	t.Setenv("INFISICAL_PROJECT_ID", "test-project")
 	t.Setenv("INFISICAL_ENVIRONMENT", "")
 	t.Setenv("INFISICAL_API_KEY", "")
-	t.Setenv("INFISICAL_TOKEN", "")
 	t.Setenv("INFISICAL_CLIENT_ID", "")
 	t.Setenv("INFISICAL_CLIENT_SECRET", "")
 
@@ -460,7 +436,6 @@ func TestInitializeConfigService_ProdPath_DefaultAddr(t *testing.T) {
 	t.Setenv("INFISICAL_PROJECT_ID", "test-project")
 	t.Setenv("INFISICAL_ENVIRONMENT", "prod")
 	t.Setenv("INFISICAL_API_KEY", "my-key")
-	t.Setenv("INFISICAL_TOKEN", "")
 	t.Setenv("INFISICAL_CLIENT_ID", "")
 	t.Setenv("INFISICAL_CLIENT_SECRET", "")
 
@@ -482,7 +457,6 @@ func TestInitializeConfigService_ProdPath_LoadError(t *testing.T) {
 	t.Setenv("INFISICAL_PROJECT_ID", "test-project")
 	t.Setenv("INFISICAL_ENVIRONMENT", "prod")
 	t.Setenv("INFISICAL_API_KEY", "key")
-	t.Setenv("INFISICAL_TOKEN", "")
 	t.Setenv("INFISICAL_CLIENT_ID", "")
 	t.Setenv("INFISICAL_CLIENT_SECRET", "")
 

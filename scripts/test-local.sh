@@ -21,8 +21,8 @@ fi
 # Clean up background processes on exit
 cleanup() {
     echo -e "\n${YELLOW}Cleaning up...${NC}"
-    pkill -f "mock-infisical" || true
-    pkill -f "http" || true
+    pkill -f "/tmp/mock-infisical" || true
+    pkill -f "/tmp/http-server" || true
     echo -e "${GREEN}Cleanup complete${NC}"
 }
 
@@ -42,7 +42,6 @@ sleep 1
 
 # Set environment variables
 export INFISICAL_ADDR="http://localhost:8000"
-export INFISICAL_TOKEN="test-token"
 export TEMPORAL_ADDRESS="localhost:7233"
 export TEMPORAL_NAMESPACE="default"
 

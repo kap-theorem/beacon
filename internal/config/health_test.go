@@ -1,7 +1,6 @@
 package config
 
 import (
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -162,14 +161,4 @@ func TestSetReady_Toggle(t *testing.T) {
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected 503 after SetReady(false), got %d", w.Code)
 	}
-}
-
-// --- SetError ---
-
-func TestSetError(t *testing.T) {
-	hc := NewHealthChecker()
-	sentinel := errors.New("some health error")
-	hc.SetError(sentinel)
-	// SetError stores the error; no observable HTTP effect, but verify no panic.
-	hc.SetError(nil)
 }

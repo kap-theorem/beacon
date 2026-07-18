@@ -9,14 +9,9 @@ Beacon is an async notification service built in Go. It currently supports email
 | Document | Description |
 |---|---|
 | [API Reference](docs/API.md) | All endpoints with request/response shapes and status codes |
-| [Usage Examples](docs/EXAMPLES.md) | End-to-end request examples and common workflows |
 | [Architecture Overview](docs/ARCHITECTURE.md) | Component diagram, request lifecycle, tech stack |
 | [Configuration Reference](docs/CONFIGURATION.md) | Every environment variable with defaults and descriptions |
-| [Development Guide](docs/DEVELOPMENT.md) | Local setup, build targets, testing workflow |
 | [Deployment Guide](docs/DEPLOYMENT.md) | Docker Compose and systemd deployment instructions |
-| [Integration Guide](docs/INTEGRATION.md) | How upstream services call Beacon |
-| [Feature Readiness Matrix](docs/FEATURE_READINESS.md) | Verified endpoint I/O and doc-discrepancy findings |
-| [Future Scope](docs/future-scope.md) | Planned features and known limitations |
 
 ---
 
@@ -64,7 +59,25 @@ For a fully local smoke test (no real Infisical instance needed), use the mock t
 bash scripts/test-local.sh
 ```
 
-For all available make targets, see the [Development Guide](docs/DEVELOPMENT.md).
+---
+
+## Make Targets
+
+```bash
+# Build both binaries into bin/
+make build
+
+# Build individually
+make build-server
+make build-email-worker
+
+# Run (builds first if needed)
+make run-server        # starts HTTP server on :6969
+make run-email-worker  # starts Temporal worker
+
+# Clean
+make clean
+```
 
 ---
 
@@ -84,6 +97,11 @@ make cover-html
 make test-integration
 ```
 
+To smoke-test a running deployment's endpoints (health, notify, DLQ, admin):
+```bash
+bash scripts/readiness-check.sh
+```
+
 ---
 
 ## Prerequisites
@@ -91,4 +109,4 @@ make test-integration
 - Go 1.24+
 - [Temporal](https://learn.temporal.io/getting_started/go/dev_environment/) running at `localhost:7233`
 - An SMTP provider or dev mode (`DEV_MODE=true`) with local SMTP vars
-- [Infisical](docs/infisical/INFISICAL_QUICKSTART.md) for production SMTP secret management (optional in dev mode)
+- [Infisical](docs/DEPLOYMENT.md#4-infisical-setup) for production SMTP secret management (optional in dev mode)

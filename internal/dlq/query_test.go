@@ -342,7 +342,7 @@ func TestQueryFailedWorkflows_ReturnsAllStatusesWhenFilterEmpty(t *testing.T) {
 	}
 
 	filter := FailureFilter{Limit: 10}
-	results, err := queryFailedWorkflows(ctx, mc, "default", filter, noopLogger())
+	results, err := NewDLQService(mc, "default", noopLogger()).QueryFailures(ctx, filter)
 	require.NoError(t, err)
 	assert.Len(t, results, 3)
 
@@ -373,7 +373,7 @@ func TestQueryFailedWorkflows_StatusFilterCaseInsensitive(t *testing.T) {
 	mc.On("GetWorkflowHistory", ctx, "wf-failed", "r1", false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
 
 	filter := FailureFilter{Status: "failed"} // lowercase — should match "Failed"
-	results, err := queryFailedWorkflows(ctx, mc, "default", filter, noopLogger())
+	results, err := NewDLQService(mc, "default", noopLogger()).QueryFailures(ctx, filter)
 	require.NoError(t, err)
 	assert.Len(t, results, 1)
 	assert.Equal(t, "Failed", results[0].Status)
@@ -397,7 +397,7 @@ func TestQueryFailedWorkflows_ProviderFilter(t *testing.T) {
 	mc.On("GetWorkflowHistory", ctx, "wf1", "r1", false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
 
 	filter := FailureFilter{Provider: "sendgrid"}
-	results, err := queryFailedWorkflows(ctx, mc, "default", filter, noopLogger())
+	results, err := NewDLQService(mc, "default", noopLogger()).QueryFailures(ctx, filter)
 	require.NoError(t, err)
 	assert.Len(t, results, 1)
 	assert.Equal(t, "sendgrid", results[0].Provider)
@@ -425,7 +425,7 @@ func TestQueryFailedWorkflows_LimitClamping(t *testing.T) {
 
 	// Limit > 100 should be clamped to 100 (but we have only 5 results)
 	filter := FailureFilter{Limit: 200}
-	results, err := queryFailedWorkflows(ctx, mc, "default", filter, noopLogger())
+	results, err := NewDLQService(mc, "default", noopLogger()).QueryFailures(ctx, filter)
 	require.NoError(t, err)
 	assert.Len(t, results, 5) // only 5 available
 	mc.AssertExpectations(t)
@@ -445,14 +445,15 @@ func TestQueryFailedWorkflows_DefaultLimit(t *testing.T) {
 	resp := makeListResp(executions...)
 	mc.On("ListClosedWorkflow", ctx, mock.Anything).Return(resp, nil)
 
-	for _, exec := range executions {
+	// Only the first page (default limit of 20) has its history fetched.
+	for _, exec := range executions[:20] {
 		iter := emptyHistoryIter()
 		mc.On("GetWorkflowHistory", ctx, exec.Execution.WorkflowId, exec.Execution.RunId, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
 	}
 
 	// Limit <= 0 should default to 20
 	filter := FailureFilter{Limit: 0}
-	results, err := queryFailedWorkflows(ctx, mc, "default", filter, noopLogger())
+	results, err := NewDLQService(mc, "default", noopLogger()).QueryFailures(ctx, filter)
 	require.NoError(t, err)
 	assert.Len(t, results, 20)
 	mc.AssertExpectations(t)
@@ -469,14 +470,38 @@ func TestQueryFailedWorkflows_OffsetBeyondResults(t *testing.T) {
 	resp := makeListResp(executions...)
 	mc.On("ListClosedWorkflow", ctx, mock.Anything).Return(resp, nil)
 
-	iter := emptyHistoryIter()
-	mc.On("GetWorkflowHistory", ctx, "wf1", "r1", false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
+	// No history is fetched: the offset skips past every match, so no
+	// execution makes it into the returned page.
 
 	// Offset beyond available results should return empty slice
 	filter := FailureFilter{Limit: 10, Offset: 100}
-	results, err := queryFailedWorkflows(ctx, mc, "default", filter, noopLogger())
+	results, err := NewDLQService(mc, "default", noopLogger()).QueryFailures(ctx, filter)
 	require.NoError(t, err)
 	assert.Empty(t, results)
+	mc.AssertExpectations(t)
+}
+
+func TestQueryFailedWorkflows_NegativeOffsetClampedToZero(t *testing.T) {
+	mc := &mocks.Client{}
+	ctx := context.Background()
+	now := time.Now()
+
+	executions := []*workflowpb.WorkflowExecutionInfo{
+		makeExecInfo("wf1", "run1", "email-sendgrid-queue", enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, now),
+	}
+	resp := makeListResp(executions...)
+	mc.On("ListClosedWorkflow", ctx, mock.Anything).Return(resp, nil)
+
+	msg := &models.EmailMessage{To: "user@example.com", Subject: "Hello", Body: "World"}
+	iter := buildHistoryIter([]*historypb.HistoryEvent{makeStartedEvent(mustPayloads(t, msg))})
+	mc.On("GetWorkflowHistory", ctx, "wf1", "run1", false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
+
+	// A negative offset must behave like offset 0, not panic on the slice.
+	filter := FailureFilter{Limit: 10, Offset: -5}
+	results, err := NewDLQService(mc, "default", noopLogger()).QueryFailures(ctx, filter)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "wf1", results[0].WorkflowID)
 	mc.AssertExpectations(t)
 }
 
@@ -490,7 +515,7 @@ func TestQueryFailedWorkflows_ListClosedWorkflowError(t *testing.T) {
 	)
 
 	filter := FailureFilter{}
-	_, err := queryFailedWorkflows(ctx, mc, "default", filter, noopLogger())
+	_, err := NewDLQService(mc, "default", noopLogger()).QueryFailures(ctx, filter)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "list closed workflows")
 	mc.AssertExpectations(t)
@@ -515,7 +540,7 @@ func TestQueryFailedWorkflows_ExtractDetailsError_UsesEmptyDetails(t *testing.T)
 
 	// The service logs the warning and continues with empty details
 	filter := FailureFilter{Limit: 10}
-	results, err := queryFailedWorkflows(ctx, mc, "default", filter, noopLogger())
+	results, err := NewDLQService(mc, "default", noopLogger()).QueryFailures(ctx, filter)
 	require.NoError(t, err)
 	assert.Len(t, results, 1)
 	// details should be empty
@@ -546,7 +571,7 @@ func TestQueryFailedWorkflows_WithLastAttemptAt(t *testing.T) {
 	mc.On("GetWorkflowHistory", ctx, "wf1", "r1", false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
 
 	filter := FailureFilter{Limit: 10}
-	results, err := queryFailedWorkflows(ctx, mc, "default", filter, noopLogger())
+	results, err := NewDLQService(mc, "default", noopLogger()).QueryFailures(ctx, filter)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.WithinDuration(t, failTime, results[0].LastAttemptAt, time.Second)
@@ -568,13 +593,14 @@ func TestQueryFailedWorkflows_PaginationOffset(t *testing.T) {
 	resp := makeListResp(executions...)
 	mc.On("ListClosedWorkflow", ctx, mock.Anything).Return(resp, nil)
 
-	for _, exec := range executions {
+	// Only the returned page (offset 1 onwards) has its history fetched.
+	for _, exec := range executions[1:] {
 		iter := emptyHistoryIter()
 		mc.On("GetWorkflowHistory", ctx, exec.Execution.WorkflowId, exec.Execution.RunId, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
 	}
 
 	filter := FailureFilter{Limit: 10, Offset: 1}
-	results, err := queryFailedWorkflows(ctx, mc, "default", filter, noopLogger())
+	results, err := NewDLQService(mc, "default", noopLogger()).QueryFailures(ctx, filter)
 	require.NoError(t, err)
 	// 3 results minus offset 1 = 2
 	assert.Len(t, results, 2)

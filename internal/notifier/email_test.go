@@ -14,7 +14,6 @@ func TestEmailService_Send_Success(t *testing.T) {
 	svc := NewEmailService(srv.Host(), srv.Port(), "", "", "beacon@local", "Beacon")
 
 	err := svc.Send(context.Background(), &Message[models.EmailMessage]{
-		ID:   "1",
 		Type: EmailNotifier,
 		Data: models.EmailMessage{To: "a@b.com", Subject: "hello", Body: "world"},
 	})
@@ -38,7 +37,6 @@ func TestEmailService_Send_MultipleMessages(t *testing.T) {
 
 	for i, to := range []string{"one@test.com", "two@test.com"} {
 		err := svc.Send(context.Background(), &Message[models.EmailMessage]{
-			ID:   string(rune('1' + i)),
 			Type: EmailNotifier,
 			Data: models.EmailMessage{To: to, Subject: "sub", Body: "body"},
 		})
@@ -60,7 +58,6 @@ func TestEmailService_Send_DialError(t *testing.T) {
 	svc := NewEmailService("127.0.0.1", 1, "", "", "f@local", "F")
 
 	err := svc.Send(context.Background(), &Message[models.EmailMessage]{
-		ID:   "99",
 		Type: EmailNotifier,
 		Data: models.EmailMessage{To: "nobody@nowhere.com", Subject: "s", Body: "b"},
 	})
@@ -82,7 +79,6 @@ func TestEmailService_Send_WithCredentials(t *testing.T) {
 	svc := NewEmailService(srv.Host(), srv.Port(), "user", "pass", "from@local", "Sender")
 
 	_ = svc.Send(context.Background(), &Message[models.EmailMessage]{
-		ID:   "2",
 		Type: EmailNotifier,
 		Data: models.EmailMessage{To: "cred@test.com", Subject: "auth", Body: "test"},
 	})

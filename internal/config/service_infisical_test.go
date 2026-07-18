@@ -665,30 +665,6 @@ func TestGetRevision(t *testing.T) {
 	}
 }
 
-// --- GetCacheAge tests ---
-
-func TestGetCacheAge_NilCurrent(t *testing.T) {
-	cs := NewConfigService("http://unused", "proj", "prod", "key", "", "", testLogger())
-	age := cs.GetCacheAge()
-	if age != -1 {
-		t.Errorf("expected -1 for nil current, got %v", age)
-	}
-}
-
-func TestGetCacheAge_WithCurrent(t *testing.T) {
-	cs := NewConfigService("http://unused", "proj", "prod", "key", "", "", testLogger())
-	ts := time.Now().Add(-5 * time.Second).UTC()
-	cs.Store(&ConfigBundle{
-		SMTP:      map[string]*SMTPClientConfig{},
-		Revision:  1,
-		Timestamp: ts,
-	})
-	age := cs.GetCacheAge()
-	if age < 4*time.Second || age > 10*time.Second {
-		t.Errorf("expected cache age ~5s, got %v", age)
-	}
-}
-
 // --- TransientError tests ---
 
 func TestTransientError(t *testing.T) {
@@ -726,39 +702,6 @@ func TestFetchConfigs_ClientSecretAuth(t *testing.T) {
 	}
 	if _, ok := configs["p1"]; !ok {
 		t.Errorf("expected 'p1' in configs")
-	}
-}
-
-// --- SMTPClientConfig type methods ---
-
-func TestSMTPClientConfig_String(t *testing.T) {
-	cfg := &SMTPClientConfig{
-		Provider: "mailgun",
-		Host:     "smtp.mailgun.org",
-		Port:     587,
-		AuthType: AuthPlain,
-	}
-	s := cfg.String()
-	if s == "" {
-		t.Error("expected non-empty String()")
-	}
-}
-
-func TestSMTPClientConfig_LogSafe(t *testing.T) {
-	cfg := &SMTPClientConfig{
-		Name:     "test",
-		Provider: "mailgun",
-		Host:     "smtp.mailgun.org",
-		Port:     587,
-		Username: "user",
-		AuthType: AuthPlain,
-	}
-	m := cfg.LogSafe()
-	if m["name"] != "test" {
-		t.Errorf("expected name 'test', got: %v", m["name"])
-	}
-	if _, ok := m["host"]; !ok {
-		t.Error("expected 'host' in LogSafe map")
 	}
 }
 

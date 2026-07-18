@@ -26,6 +26,7 @@ go.work.sum
 
 # env file
 .env*
+!.env.example
 
 # Editor/IDE
 # .idea/
@@ -47,9 +48,6 @@ covdata/
 
 # Local deployment env files (copy from *.env.example; never commit secrets)
 deploy/env/*.env
-
-# Docs
-docs/infisical/
 
 # Local tooling
 .mcp.json

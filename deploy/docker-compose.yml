@@ -83,12 +83,6 @@ services:
       TEMPORAL_ADDRESS: temporal:7233
     ports:
       - "6969:6969"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:6969/healthz/ready || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
     depends_on:
       - temporal
     restart: unless-stopped

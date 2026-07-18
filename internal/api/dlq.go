@@ -68,9 +68,6 @@ func (h *DLQHandler) HandleQueryFailures(w http.ResponseWriter, req *http.Reques
 			filter.Offset = v
 		}
 	}
-	if filter.Limit > 100 {
-		filter.Limit = 100
-	}
 
 	failures, err := h.Service.QueryFailures(req.Context(), filter)
 	if err != nil {

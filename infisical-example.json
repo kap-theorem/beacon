@@ -15,8 +15,6 @@
         "server_name": "smtp.sendgrid.net"
       },
       "timeout": "30s",
-      "max_retries": 3,
-      "max_per_hour": 0,
       "categories": ["transactional", "otp"],
       "is_default": true
     },
@@ -33,8 +31,6 @@
         "server_name": "smtp.mailgun.org"
       },
       "timeout": "30s",
-      "max_retries": 3,
-      "max_per_hour": 500,
       "categories": ["marketing"],
       "is_default": false
     }
