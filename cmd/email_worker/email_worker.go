@@ -3,7 +3,6 @@ package main
 import (
 	"beacon/internal/app"
 	confpkg "beacon/internal/config"
-	"beacon/internal/models"
 	"beacon/internal/notifier"
 	"beacon/internal/temporal"
 	"beacon/utils"
@@ -49,12 +48,12 @@ func main() {
 
 	taskQueue := notifier.TaskQueueFor(providerName)
 
-	// EmailService is hot-swapped by the ConfigWatcher via an atomic pointer.
-	var emailSvc atomic.Pointer[notifier.EmailService]
-	emailSvc.Store(notifier.NewEmailService(smtpCfg.Host, smtpCfg.Port, smtpCfg.Username, smtpCfg.Password, smtpCfg.FromAddress, smtpCfg.FromName))
+	// EmailSender is hot-swapped by the ConfigWatcher via an atomic pointer.
+	var emailSender atomic.Pointer[notifier.EmailSender]
+	emailSender.Store(notifier.NewEmailSender(smtpCfg))
 
-	getEmailService := func() notifier.Notifier[models.EmailMessage] {
-		return emailSvc.Load()
+	getSender := func() notifier.Sender {
+		return emailSender.Load()
 	}
 
 	c, err := utils.NewTemporalClient()
@@ -78,12 +77,16 @@ func main() {
 			logger.Error("config reload: provider not found", slog.String("provider", providerName), slog.Any("error", cfgErr))
 			return
 		}
-		emailSvc.Store(notifier.NewEmailService(newCfg.Host, newCfg.Port, newCfg.Username, newCfg.Password, newCfg.FromAddress, newCfg.FromName))
-		logger.Info("email service reloaded", slog.String("provider", providerName))
+		old := emailSender.Load()
+		emailSender.Store(notifier.NewEmailSender(newCfg))
+		if old != nil {
+			old.Close()
+		}
+		logger.Info("email sender reloaded", slog.String("provider", providerName))
 	}, logger)
 	go watcher.Start(watchCtx)
 
-	emailActivities := &temporal.EmailActivities{GetService: getEmailService}
+	emailActivities := &temporal.EmailActivities{GetSender: getSender}
 
 	w.RegisterWorkflow(temporal.SendEmailWorkflow)
 	w.RegisterActivity(emailActivities.SendEmailActivity)

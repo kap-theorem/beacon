@@ -135,7 +135,7 @@ func (s *DLQService) QueryFailures(ctx context.Context, filter FailureFilter) ([
 }
 
 type workflowDetails struct {
-	msg           *models.EmailMessage // full original input; nil if not decoded
+	msg           *models.Notification // full original input (envelope form); nil if not decoded
 	recipient     string
 	subject       string
 	failureReason string
@@ -158,11 +158,17 @@ func extractWorkflowDetails(ctx context.Context, tc client.Client, workflowID, r
 		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED:
 			attrs := event.GetWorkflowExecutionStartedEventAttributes()
 			if attrs != nil && attrs.Input != nil {
-				var msg models.EmailMessage
-				if decErr := converter.GetDefaultDataConverter().FromPayloads(attrs.Input, &msg); decErr == nil {
-					d.msg = &msg
-					d.recipient = msg.To
-					d.subject = msg.Subject
+				var n models.Notification
+				if decErr := converter.GetDefaultDataConverter().FromPayloads(attrs.Input, &n); decErr == nil {
+					// Workflow input may be either the envelope shape (new) or the
+					// legacy EmailMessage shape recorded by pre-cutover workflows;
+					// Normalize upgrades the latter so both decode to n.Email.
+					n.Normalize()
+					d.msg = &n
+					if n.Email != nil {
+						d.recipient = n.Email.To
+						d.subject = n.Email.Subject
+					}
 				}
 			}
 

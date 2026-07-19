@@ -129,7 +129,7 @@ func TestReplay_TerminalFailed_Success(t *testing.T) {
 				opts.TaskQueue == expectedQueue &&
 				opts.WorkflowIDReusePolicy == enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY
 		}),
-		mock.AnythingOfType("func(internal.Context, *models.EmailMessage) error"),
+		mock.AnythingOfType("func(internal.Context, *models.Notification) error"),
 		mock.Anything,
 	).Return(wfRun, nil)
 
@@ -163,7 +163,7 @@ func TestReplay_TerminalTimedOut_Success(t *testing.T) {
 	wfRun.On("GetRunID").Return("new-run-456")
 
 	mc.On("ExecuteWorkflow", ctx, mock.Anything,
-		mock.AnythingOfType("func(internal.Context, *models.EmailMessage) error"),
+		mock.AnythingOfType("func(internal.Context, *models.Notification) error"),
 		mock.Anything,
 	).Return(wfRun, nil)
 
@@ -193,7 +193,7 @@ func TestReplay_TerminalCanceled_Success(t *testing.T) {
 	wfRun.On("GetRunID").Return("new-run-789")
 
 	mc.On("ExecuteWorkflow", ctx, mock.Anything,
-		mock.AnythingOfType("func(internal.Context, *models.EmailMessage) error"),
+		mock.AnythingOfType("func(internal.Context, *models.Notification) error"),
 		mock.Anything,
 	).Return(wfRun, nil)
 
@@ -225,7 +225,7 @@ func TestReplay_AlreadyStarted(t *testing.T) {
 		"already running", "req-id-1", "existing-run-id",
 	)
 	mc.On("ExecuteWorkflow", ctx, mock.Anything,
-		mock.AnythingOfType("func(internal.Context, *models.EmailMessage) error"),
+		mock.AnythingOfType("func(internal.Context, *models.Notification) error"),
 		mock.Anything,
 	).Return((*mocks.WorkflowRun)(nil), alreadyStartedErr)
 
@@ -253,7 +253,7 @@ func TestReplay_ExecuteWorkflowError(t *testing.T) {
 	mc.On("GetWorkflowHistory", ctx, origWFID, origRunID, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
 
 	mc.On("ExecuteWorkflow", ctx, mock.Anything,
-		mock.AnythingOfType("func(internal.Context, *models.EmailMessage) error"),
+		mock.AnythingOfType("func(internal.Context, *models.Notification) error"),
 		mock.Anything,
 	).Return((*mocks.WorkflowRun)(nil), errors.New("temporal cluster unreachable"))
 
@@ -296,7 +296,7 @@ func TestReplay_HistoryWithActivityFailure(t *testing.T) {
 	wfRun.On("GetRunID").Return("new-run-af")
 
 	mc.On("ExecuteWorkflow", ctx, mock.Anything,
-		mock.AnythingOfType("func(internal.Context, *models.EmailMessage) error"),
+		mock.AnythingOfType("func(internal.Context, *models.Notification) error"),
 		mock.Anything,
 	).Return(wfRun, nil)
 
@@ -329,7 +329,7 @@ func TestDLQService_ReplayWorkflow_IntegrationPath(t *testing.T) {
 	wfRun.On("GetRunID").Return("svc-new-run")
 
 	mc.On("ExecuteWorkflow", ctx, mock.Anything,
-		mock.AnythingOfType("func(internal.Context, *models.EmailMessage) error"),
+		mock.AnythingOfType("func(internal.Context, *models.Notification) error"),
 		mock.Anything,
 	).Return(wfRun, nil)
 

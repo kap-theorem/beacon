@@ -158,41 +158,41 @@ func newBundle(providers ...smtpProvider) *config.ConfigBundle {
 	}
 }
 
-// swappableService is an EmailService wrapper whose underlying SMTP target can
-// be hot-swapped under a mutex, mirroring how cmd/email_worker reloads its
-// service when config changes. The DLQ-replay scenario uses this to point the
+// swappableSender is a Sender wrapper whose underlying SMTP target can be
+// hot-swapped under a mutex, mirroring how cmd/email_worker reloads its
+// sender when config changes. The DLQ-replay scenario uses this to point the
 // worker at a HEALTHY mock SMTP after the original delivery failed.
-type swappableService struct {
+type swappableSender struct {
 	mu  sync.RWMutex
-	svc notifier.Notifier[models.EmailMessage]
+	snd notifier.Sender
 }
 
-func newSwappableService(svc notifier.Notifier[models.EmailMessage]) *swappableService {
-	return &swappableService{svc: svc}
+func newSwappableService(snd notifier.Sender) *swappableSender {
+	return &swappableSender{snd: snd}
 }
 
-func (s *swappableService) get() notifier.Notifier[models.EmailMessage] {
+func (s *swappableSender) get() notifier.Sender {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.svc
+	return s.snd
 }
 
-func (s *swappableService) swap(svc notifier.Notifier[models.EmailMessage]) {
+func (s *swappableSender) swap(snd notifier.Sender) {
 	s.mu.Lock()
-	s.svc = svc
+	s.snd = snd
 	s.mu.Unlock()
 }
 
 // startWorker starts an in-process Temporal worker on the task queue for
 // providerName. The worker registers SendEmailWorkflow and a SendEmailActivity
-// whose EmailService is provided by getService (allowing hot-swap). The worker
-// is stopped via t.Cleanup.
-func startWorker(t *testing.T, c client.Client, providerName string, getService func() notifier.Notifier[models.EmailMessage]) {
+// whose Sender is provided by getSender (allowing hot-swap). The worker is
+// stopped via t.Cleanup.
+func startWorker(t *testing.T, c client.Client, providerName string, getSender func() notifier.Sender) {
 	t.Helper()
 	tq := notifier.TaskQueueFor(providerName)
 	w := worker.New(c, tq, worker.Options{})
 
-	activities := &temporal.EmailActivities{GetService: getService}
+	activities := &temporal.EmailActivities{GetSender: getSender}
 	w.RegisterWorkflow(temporal.SendEmailWorkflow)
 	w.RegisterActivity(activities.SendEmailActivity)
 
@@ -202,15 +202,19 @@ func startWorker(t *testing.T, c client.Client, providerName string, getService 
 	t.Cleanup(w.Stop)
 }
 
-// emailServiceForMock builds a real EmailService pointed at a mock SMTP server.
-func emailServiceForMock(mock *testsupport.MockSMTPServer, from, fromName string) notifier.Notifier[models.EmailMessage] {
-	return notifier.NewEmailService(mock.Host(), mock.Port(), "", "", from, fromName)
+// emailServiceForMock builds a real EmailSender pointed at a mock SMTP server.
+func emailServiceForMock(mock *testsupport.MockSMTPServer, from, fromName string) notifier.Sender {
+	return notifier.NewEmailSender(&config.SMTPClientConfig{
+		Host: mock.Host(), Port: mock.Port(), FromAddress: from, FromName: fromName,
+	})
 }
 
-// emailServiceForAddr builds a real EmailService pointed at an arbitrary
+// emailServiceForAddr builds a real EmailSender pointed at an arbitrary
 // host:port (used to target a dead port for the failure scenario).
-func emailServiceForAddr(host string, port int, from, fromName string) notifier.Notifier[models.EmailMessage] {
-	return notifier.NewEmailService(host, port, "", "", from, fromName)
+func emailServiceForAddr(host string, port int, from, fromName string) notifier.Sender {
+	return notifier.NewEmailSender(&config.SMTPClientConfig{
+		Host: host, Port: port, FromAddress: from, FromName: fromName,
+	})
 }
 
 // newServer stands up an httptest server exposing the real handlers. Any of
@@ -361,7 +365,7 @@ func TestIntegration_HappyPath(t *testing.T) {
 		t.Fatalf("build registry: %v", err)
 	}
 
-	startWorker(t, c, provider, func() notifier.Notifier[models.EmailMessage] {
+	startWorker(t, c, provider, func() notifier.Sender {
 		return emailServiceForMock(mock, from, fromName)
 	})
 
@@ -432,10 +436,10 @@ func TestIntegration_RoutingByClientHint(t *testing.T) {
 	}
 
 	// One worker per provider task queue.
-	startWorker(t, c, providerA, func() notifier.Notifier[models.EmailMessage] {
+	startWorker(t, c, providerA, func() notifier.Sender {
 		return emailServiceForMock(mockA, fromA, "Beacon Tx")
 	})
-	startWorker(t, c, providerB, func() notifier.Notifier[models.EmailMessage] {
+	startWorker(t, c, providerB, func() notifier.Sender {
 		return emailServiceForMock(mockB, fromB, "Beacon Mkt")
 	})
 
@@ -492,7 +496,7 @@ func TestIntegration_ValidationFailure(t *testing.T) {
 
 	// Start a worker so that if (incorrectly) a workflow were started, delivery
 	// could happen -- making the "no delivery" assertion meaningful.
-	startWorker(t, c, provider, func() notifier.Notifier[models.EmailMessage] {
+	startWorker(t, c, provider, func() notifier.Sender {
 		return emailServiceForMock(mock, from, "Beacon")
 	})
 
