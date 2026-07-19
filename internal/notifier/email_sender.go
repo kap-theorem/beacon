@@ -3,8 +3,12 @@ package notifier
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"sync"
+	"syscall"
 
 	"beacon/internal/config"
 	"beacon/internal/models"
@@ -21,8 +25,22 @@ type EmailSender struct {
 	closer gomail.SendCloser
 }
 
+var _ Sender = (*EmailSender)(nil)
+
 func NewEmailSender(cfg *config.SMTPClientConfig) *EmailSender {
 	return &EmailSender{cfg: cfg}
+}
+
+// transportError reports whether err looks like a broken/stale connection
+// (worth one re-dial) rather than a protocol-level SMTP rejection, which
+// would fail identically on retry and, worse, can double-deliver a message
+// whose DATA was already accepted.
+func transportError(err error) bool {
+	var nerr net.Error
+	if errors.As(err, &nerr) && nerr.Timeout() {
+		return true
+	}
+	return errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
 }
 
 func (e *EmailSender) dialer() *gomail.Dialer {
@@ -30,6 +48,9 @@ func (e *EmailSender) dialer() *gomail.Dialer {
 	if e.cfg.Timeout > 0 {
 		d.Timeout = e.cfg.Timeout
 	}
+	// AuthType is enforced at config validation (PLAIN/LOGIN only); at runtime
+	// gomail negotiates the mechanism from the server's advertised AUTH list.
+	// The configured value does not force a mechanism.
 	if e.cfg.TLS.Enabled {
 		d.TLSConfig = &tls.Config{ServerName: e.cfg.TLS.ServerName}
 		if e.cfg.Port == 465 {
@@ -38,16 +59,25 @@ func (e *EmailSender) dialer() *gomail.Dialer {
 			d.StartTLSPolicy = gomail.MandatoryStartTLS
 		}
 	}
+	// When TLS.Enabled is false, gomail's defaults still apply: implicit TLS
+	// on port 465, opportunistic STARTTLS elsewhere.
 	return d
 }
 
 func (e *EmailSender) Send(ctx context.Context, n *models.Notification) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	p := n.Email
 	if p == nil {
 		return fmt.Errorf("notification has no email payload")
 	}
 
 	m := gomail.NewMessage()
+	// The policy From identity is atomic: when the payload carries an
+	// address, its (possibly empty) display name is used as-is — the
+	// provider's FromName is not mixed in.
 	fromAddr, fromName := e.cfg.FromAddress, e.cfg.FromName
 	if p.FromAddress != "" {
 		fromAddr, fromName = p.FromAddress, p.FromName
@@ -78,9 +108,19 @@ func (e *EmailSender) Send(ctx context.Context, n *models.Notification) error {
 		e.closer = c
 	}
 	if err := gomail.Send(e.closer, m); err != nil {
-		// Stale connection (server idle-closed, network blip): re-dial once.
+		// The connection is suspect either way: drop it so the next call
+		// starts clean.
 		_ = e.closer.Close()
 		e.closer = nil
+
+		if !transportError(err) {
+			// Protocol-level SMTP rejection (bad recipient, policy reject,
+			// etc.) would fail identically on retry, and retrying risks
+			// double-delivering a message whose DATA was already accepted.
+			return fmt.Errorf("smtp send: %w", err)
+		}
+
+		// Stale connection (server idle-closed, network blip): re-dial once.
 		c, derr := e.dialer().Dial()
 		if derr != nil {
 			return fmt.Errorf("smtp re-dial after send failure (%v): %w", err, derr)

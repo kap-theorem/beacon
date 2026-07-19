@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -19,9 +20,10 @@ type CapturedMessage struct {
 // MockSMTPServer is a minimal in-process SMTP server for tests. It accepts the
 // subset of SMTP that gopkg.in/mail.v2 uses with no auth and no STARTTLS.
 type MockSMTPServer struct {
-	ln       net.Listener
-	mu       sync.Mutex
-	messages []CapturedMessage
+	ln          net.Listener
+	mu          sync.Mutex
+	messages    []CapturedMessage
+	connections atomic.Int64
 }
 
 // NewMockSMTPServer starts the server on a random localhost port and registers
@@ -42,6 +44,9 @@ func (s *MockSMTPServer) Host() string { return "127.0.0.1" }
 
 func (s *MockSMTPServer) Port() int { return s.ln.Addr().(*net.TCPAddr).Port }
 
+// Connections returns the number of TCP connections accepted so far.
+func (s *MockSMTPServer) Connections() int { return int(s.connections.Load()) }
+
 // Messages returns a copy of all captured messages.
 func (s *MockSMTPServer) Messages() []CapturedMessage {
 	s.mu.Lock()
@@ -57,6 +62,7 @@ func (s *MockSMTPServer) serve() {
 		if err != nil {
 			return // listener closed
 		}
+		s.connections.Add(1)
 		go s.handle(conn)
 	}
 }
