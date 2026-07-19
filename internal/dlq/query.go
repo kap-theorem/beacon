@@ -16,6 +16,10 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// maxListPages bounds the number of ListClosedWorkflow RPCs issued per DLQ
+// query, so a tenant filter that discards most of a page cannot page forever.
+const maxListPages = 10
+
 // QueryFailures lists closed SendEmailWorkflow executions and applies in-process filtering (S4, S6).
 // Uses ListClosedWorkflow (no Elasticsearch required) with TypeFilter, then filters by status/provider/date.
 func (s *DLQService) QueryFailures(ctx context.Context, filter FailureFilter) ([]*FailedNotification, error) {
@@ -45,21 +49,6 @@ func (s *DLQService) QueryFailures(ctx context.Context, filter FailureFilter) ([
 		fetchSize = 50
 	}
 
-	resp, err := s.tc.ListClosedWorkflow(ctx, &workflowservice.ListClosedWorkflowExecutionsRequest{
-		Namespace:       s.namespace,
-		MaximumPageSize: fetchSize,
-		StartTimeFilter: &filterpb.StartTimeFilter{
-			EarliestTime: timestamppb.New(from),
-			LatestTime:   timestamppb.New(to),
-		},
-		Filters: &workflowservice.ListClosedWorkflowExecutionsRequest_TypeFilter{
-			TypeFilter: &filterpb.WorkflowTypeFilter{Name: "SendEmailWorkflow"},
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("list closed workflows: %w", err)
-	}
-
 	// Collect matching executions first (lightweight — no history RPCs), page
 	// them, then fetch workflow history only for the executions being returned.
 	type matchedExec struct {
@@ -73,36 +62,62 @@ func (s *DLQService) QueryFailures(ctx context.Context, filter FailureFilter) ([
 	}
 
 	var matches []matchedExec
+	var nextPageToken []byte
 
-	for _, exec := range resp.Executions {
-		status := workflowStatus(exec.Status)
-		if !statusMatches(status, filter.Status) {
-			continue
-		}
-
-		tenant := memoString(exec.Memo, "tenant")
-		if filter.Tenant != "" && tenant != filter.Tenant {
-			continue
-		}
-		service := memoString(exec.Memo, "service")
-
-		provider := memoString(exec.Memo, "provider")
-		if provider == "" {
-			provider = parseProviderFromTaskQueue(exec.TaskQueue)
-		}
-		if filter.Provider != "" && provider != filter.Provider {
-			continue
-		}
-
-		matches = append(matches, matchedExec{
-			workflowID: exec.Execution.WorkflowId,
-			runID:      exec.Execution.RunId,
-			provider:   provider,
-			service:    service,
-			tenant:     tenant,
-			status:     status,
-			closedAt:   exec.CloseTime.AsTime(),
+	for page := 0; page < maxListPages; page++ {
+		resp, err := s.tc.ListClosedWorkflow(ctx, &workflowservice.ListClosedWorkflowExecutionsRequest{
+			Namespace:       s.namespace,
+			MaximumPageSize: fetchSize,
+			NextPageToken:   nextPageToken,
+			StartTimeFilter: &filterpb.StartTimeFilter{
+				EarliestTime: timestamppb.New(from),
+				LatestTime:   timestamppb.New(to),
+			},
+			Filters: &workflowservice.ListClosedWorkflowExecutionsRequest_TypeFilter{
+				TypeFilter: &filterpb.WorkflowTypeFilter{Name: "SendEmailWorkflow"},
+			},
 		})
+		if err != nil {
+			return nil, fmt.Errorf("list closed workflows: %w", err)
+		}
+
+		for _, exec := range resp.Executions {
+			status := workflowStatus(exec.Status)
+			if !statusMatches(status, filter.Status) {
+				continue
+			}
+
+			tenant := memoString(exec.Memo, "tenant")
+			if filter.Tenant != "" && tenant != filter.Tenant {
+				continue
+			}
+			service := memoString(exec.Memo, "service")
+
+			provider := memoString(exec.Memo, "provider")
+			if provider == "" {
+				provider = parseProviderFromTaskQueue(exec.TaskQueue)
+			}
+			if filter.Provider != "" && provider != filter.Provider {
+				continue
+			}
+
+			matches = append(matches, matchedExec{
+				workflowID: exec.Execution.WorkflowId,
+				runID:      exec.Execution.RunId,
+				provider:   provider,
+				service:    service,
+				tenant:     tenant,
+				status:     status,
+				closedAt:   exec.CloseTime.AsTime(),
+			})
+		}
+
+		nextPageToken = resp.NextPageToken
+		// Stop once we have enough post-filter matches to serve the requested
+		// page, or there are no more pages to fetch.
+		if len(matches) >= limit+filter.Offset || len(nextPageToken) == 0 {
+			break
+		}
 	}
 
 	if filter.Offset >= len(matches) {

@@ -403,6 +403,47 @@ func TestReplay_TenantMatch_Proceeds(t *testing.T) {
 	mc.AssertExpectations(t)
 }
 
+// TestReplay_OfReplay_PrefixesAgain pins current behavior: replaying a
+// workflow whose ID is already "replay-X" produces a new ID of
+// "replay-replay-X" rather than collapsing/deduplicating the prefix.
+func TestReplay_OfReplay_PrefixesAgain(t *testing.T) {
+	mc := &mocks.Client{}
+	ctx := context.Background()
+	origWFID := "replay-wf-orig"
+	origRunID := "run-replay-orig"
+
+	memo := memoFixture(t, map[string]string{"tenant": "payments", "service": "billing-api", "provider": "sendgrid"})
+	mc.On("DescribeWorkflowExecution", ctx, origWFID, "").
+		Return(describeRespWithMemo(enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, "email-sendgrid-queue", origWFID, origRunID, memo), nil)
+
+	msg := &models.EmailMessage{To: "replay2@example.com", Subject: "replay of replay"}
+	payloads := mustPayloads(t, msg)
+	iter := buildHistoryIter([]*historypb.HistoryEvent{makeStartedEvent(payloads)})
+	mc.On("GetWorkflowHistory", ctx, origWFID, origRunID, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
+
+	expectedNewID := "replay-" + origWFID // "replay-replay-wf-orig"
+
+	wfRun := &mocks.WorkflowRun{}
+	wfRun.On("GetID").Return(expectedNewID)
+	wfRun.On("GetRunID").Return("new-run-of-replay")
+
+	mc.On("ExecuteWorkflow",
+		ctx,
+		mock.MatchedBy(func(opts client.StartWorkflowOptions) bool {
+			return opts.ID == expectedNewID
+		}),
+		"SendEmailWorkflow",
+		mock.Anything,
+	).Return(wfRun, nil)
+
+	result, err := NewDLQService(mc, "default", noopLogger()).ReplayWorkflow(ctx, origWFID, "payments")
+	require.NoError(t, err)
+	assert.Equal(t, "replay-replay-wf-orig", result.NewWorkflowID)
+	assert.Equal(t, origWFID, result.OriginalWorkflowID)
+	mc.AssertExpectations(t)
+	wfRun.AssertExpectations(t)
+}
+
 func TestReplay_AdminUnscoped_ProceedsRegardlessOfTenant(t *testing.T) {
 	mc := &mocks.Client{}
 	ctx := context.Background()

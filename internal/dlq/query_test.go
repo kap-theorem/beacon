@@ -708,6 +708,79 @@ func TestQueryFailedWorkflows_TenantFilter(t *testing.T) {
 	mc.AssertExpectations(t)
 }
 
+// ---------- pagination follow-through across ListClosedWorkflow pages ----------
+
+// TestQueryFailures_FollowsPagesUntilTenantMatchesFound proves that when a
+// tenant filter discards an entire page of results, QueryFailures keeps
+// following NextPageToken (instead of returning what looks like "no
+// failures") until it finds a page containing matches for the tenant.
+func TestQueryFailures_FollowsPagesUntilTenantMatchesFound(t *testing.T) {
+	mc := &mocks.Client{}
+	ctx := context.Background()
+	now := time.Now()
+
+	memoOther := memoFixture(t, map[string]string{"tenant": "other"})
+	memoPayments := memoFixture(t, map[string]string{"tenant": "payments"})
+
+	page1 := &workflowservice.ListClosedWorkflowExecutionsResponse{
+		Executions: []*workflowpb.WorkflowExecutionInfo{
+			makeExecInfoWithMemo("wf-other-1", "r1", "email-sendgrid-queue", enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, now, memoOther),
+			makeExecInfoWithMemo("wf-other-2", "r2", "email-sendgrid-queue", enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, now, memoOther),
+		},
+		NextPageToken: []byte("page-2"),
+	}
+	page2 := &workflowservice.ListClosedWorkflowExecutionsResponse{
+		Executions: []*workflowpb.WorkflowExecutionInfo{
+			makeExecInfoWithMemo("wf-payments-1", "r3", "email-sendgrid-queue", enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, now, memoPayments),
+		},
+		NextPageToken: nil,
+	}
+
+	mc.On("ListClosedWorkflow", ctx, mock.MatchedBy(func(req *workflowservice.ListClosedWorkflowExecutionsRequest) bool {
+		return len(req.NextPageToken) == 0
+	})).Return(page1, nil).Once()
+	mc.On("ListClosedWorkflow", ctx, mock.MatchedBy(func(req *workflowservice.ListClosedWorkflowExecutionsRequest) bool {
+		return string(req.NextPageToken) == "page-2"
+	})).Return(page2, nil).Once()
+
+	iter := emptyHistoryIter()
+	mc.On("GetWorkflowHistory", ctx, "wf-payments-1", "r3", false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
+
+	filter := FailureFilter{Tenant: "payments", Limit: 10}
+	results, err := NewDLQService(mc, "default", noopLogger()).QueryFailures(ctx, filter)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "wf-payments-1", results[0].WorkflowID)
+	assert.Equal(t, "payments", results[0].Tenant)
+	mc.AssertNumberOfCalls(t, "ListClosedWorkflow", 2)
+	mc.AssertExpectations(t)
+}
+
+// TestQueryFailures_StopsAtPageCap proves the pagination loop is bounded: if
+// every page returns a NextPageToken but never a matching tenant, the loop
+// stops after maxListPages calls rather than paging indefinitely.
+func TestQueryFailures_StopsAtPageCap(t *testing.T) {
+	mc := &mocks.Client{}
+	ctx := context.Background()
+	now := time.Now()
+
+	memoOther := memoFixture(t, map[string]string{"tenant": "other"})
+	resp := &workflowservice.ListClosedWorkflowExecutionsResponse{
+		Executions: []*workflowpb.WorkflowExecutionInfo{
+			makeExecInfoWithMemo("wf-other", "r1", "email-sendgrid-queue", enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, now, memoOther),
+		},
+		NextPageToken: []byte("more"),
+	}
+
+	mc.On("ListClosedWorkflow", ctx, mock.Anything).Return(resp, nil)
+
+	filter := FailureFilter{Tenant: "payments", Limit: 10}
+	results, err := NewDLQService(mc, "default", noopLogger()).QueryFailures(ctx, filter)
+	require.NoError(t, err)
+	assert.Empty(t, results)
+	mc.AssertNumberOfCalls(t, "ListClosedWorkflow", maxListPages)
+}
+
 // TestQueryFailedWorkflows_MemoProviderOverridesTaskQueueParse proves that
 // when a memo "provider" field is present it wins over the task-queue-parsed
 // provider (which stays as a fallback for pre-Task-9 workflows with no memo).

@@ -48,8 +48,11 @@ func (s *DLQService) ReplayWorkflow(ctx context.Context, workflowID, callerTenan
 	if err != nil {
 		return nil, fmt.Errorf("extract workflow input from history: %w", err)
 	}
-	if details.msg == nil || details.msg.Email == nil {
+	if details.msg == nil {
 		return nil, fmt.Errorf("original workflow input not found in history for %s", workflowID)
+	}
+	if details.msg.Email == nil {
+		return nil, fmt.Errorf("workflow %s input decoded but has no email payload; replay for non-email channels is not supported yet", workflowID)
 	}
 
 	// Use a deterministic replay ID so Temporal itself rejects duplicate starts.
