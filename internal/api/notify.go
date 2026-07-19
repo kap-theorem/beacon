@@ -138,6 +138,13 @@ func (h *NotifyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	if idem != "" {
 		opts.ID = fmt.Sprintf("%s-%s-%s", ch.Name(), ident.Service, idem)
 		opts.WorkflowIDReusePolicy = enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE
+		// Without this, the Temporal Go SDK swallows the server's
+		// WorkflowExecutionAlreadyStarted error on ID reuse and returns the
+		// existing run's ID as if the call had succeeded (see
+		// StartWorkflowOptions.WorkflowExecutionErrorWhenAlreadyStarted), so
+		// the IsWorkflowExecutionAlreadyStartedError branch below would never
+		// fire and every duplicate would silently look like a fresh accept.
+		opts.WorkflowExecutionErrorWhenAlreadyStarted = true
 	} else {
 		opts.ID = fmt.Sprintf("%s-%s-%d", ch.Name(), ident.Service, h.now().UnixNano())
 	}

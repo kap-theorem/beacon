@@ -194,6 +194,62 @@ func newBundle(providers ...smtpProvider) *config.ConfigBundle {
 	}
 }
 
+// serviceSpec describes one authenticated calling service for
+// newBundleWithServices: a name, tenant, API key, channel policy (provider
+// allowlist/default), rate limit, and optional sender-identity lock. newBundle
+// above covers the common single-service case with a fixed generous rate and
+// no From-lock; scenarios that need custom rate limits, a policy-locked From
+// identity, or multiple tenants (for DLQ scoping) use this instead.
+type serviceSpec struct {
+	service         string
+	tenant          string
+	apiKey          string
+	providers       []string
+	defaultProvider string
+	rate            config.RateConfig
+	from            *config.FromIdentity
+}
+
+// newBundleWithServices builds a *config.ConfigBundle from the given SMTP
+// providers and one-or-more serviceSpec fixtures, generalizing newBundle to
+// support more than one authenticated service/tenant per bundle.
+func newBundleWithServices(providers []smtpProvider, services ...serviceSpec) *config.ConfigBundle {
+	smtp := make(map[string]*config.SMTPClientConfig, len(providers))
+	for _, p := range providers {
+		smtp[p.name] = &config.SMTPClientConfig{
+			Name:        p.name,
+			Provider:    p.name,
+			Host:        p.host,
+			Port:        p.port,
+			AuthType:    config.AuthPlain,
+			IsDefault:   p.isDefault,
+			FromAddress: p.from,
+			FromName:    p.fromName,
+		}
+	}
+	svcs := make(map[string]*config.ServiceConfig, len(services))
+	for _, s := range services {
+		svcs[s.service] = &config.ServiceConfig{
+			Service: s.service, Tenant: s.tenant, Enabled: true,
+			Keys: []config.KeyEntry{{ID: s.service, SHA256: auth.HashKey(s.apiKey), State: "active"}},
+			Channels: map[string]*config.ChannelPolicy{
+				"email": {
+					Providers:       s.providers,
+					DefaultProvider: s.defaultProvider,
+					From:            s.from,
+					Rate:            s.rate,
+				},
+			},
+		}
+	}
+	return &config.ConfigBundle{
+		SMTP:      smtp,
+		Services:  svcs,
+		Revision:  1,
+		Timestamp: time.Now(),
+	}
+}
+
 // swappableSender is a Sender wrapper whose underlying SMTP target can be
 // hot-swapped under a mutex, mirroring how cmd/email_worker reloads its
 // sender when config changes. The DLQ-replay scenario uses this to point the
@@ -261,9 +317,14 @@ func emailServiceForAddr(host string, port int, from, fromName string) notifier.
 // The notify and DLQ routes are wired at their production v1 paths behind
 // auth.Middleware (Task 10 made /v1/dlq/* authenticated and tenant-scoped;
 // Task 12 removed the unauthenticated /notify/email route in favor of the
-// authenticated /v1/notify/{channel}). Notify callers must present
-// testAPIKey (see newBundle/postNotify); DLQ callers must present
-// dlqAdminToken via ADMIN_TOKEN (see postJSON/getJSON).
+// authenticated /v1/notify/{channel}). Mirroring internal/app/server.go's
+// BuildServerMux, the DLQ routes authenticate through the SAME authReg as
+// notify -- not a separate empty registry -- so tenant-scoped service keys
+// (not just the ADMIN_TOKEN override baked into auth.Middleware) can
+// exercise /v1/dlq/* exactly like production. Notify callers normally
+// present testAPIKey (see newBundle/postNotify); DLQ callers may present
+// either dlqAdminToken via ADMIN_TOKEN (see postJSON/getJSON) or a real
+// service key from authReg's bundle (see postJSONAs/getJSONAs).
 func newServer(t *testing.T, notifyHandler *api.NotifyHandler, authReg *auth.Registry, dlqHandler *api.DLQHandler, adminHandler *api.AdminHandler) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -272,7 +333,11 @@ func newServer(t *testing.T, notifyHandler *api.NotifyHandler, authReg *auth.Reg
 		mux.Handle("POST /v1/notify/{channel}", authMW(http.HandlerFunc(notifyHandler.Handle)))
 	}
 	if dlqHandler != nil {
-		authMW := auth.Middleware(auth.NewRegistry(nil))
+		dlqAuthReg := authReg
+		if dlqAuthReg == nil {
+			dlqAuthReg = auth.NewRegistry(nil)
+		}
+		authMW := auth.Middleware(dlqAuthReg)
 		mux.Handle("GET /v1/dlq/failed", authMW(http.HandlerFunc(dlqHandler.HandleQueryFailures)))
 		mux.Handle("POST /v1/dlq/replay/{workflowID}", authMW(http.HandlerFunc(dlqHandler.HandleReplay)))
 	}
@@ -294,10 +359,13 @@ type notifyRequest struct {
 	Provider string `json:"provider,omitempty"`
 }
 
-// postNotify POSTs a notifyRequest JSON body, authenticated with apiKey, to
-// the given URL (normally .../v1/notify/email) and returns the status code
-// and decoded API response.
-func postNotify(t *testing.T, url, apiKey string, msg notifyRequest) (int, utils_APIResponse) {
+// doNotify POSTs a notifyRequest JSON body, authenticated with apiKey (unless
+// empty, to exercise the unauthenticated path) plus any extraHeaders (e.g.
+// Idempotency-Key), to the given URL (normally .../v1/notify/email). It
+// returns the status code, decoded API response, and response headers (for
+// scenarios that assert on headers like Retry-After). postNotify wraps this
+// for the common case where headers and extraHeaders are not needed.
+func doNotify(t *testing.T, url, apiKey string, msg notifyRequest, extraHeaders map[string]string) (int, utils_APIResponse, http.Header) {
 	t.Helper()
 	body, err := json.Marshal(msg)
 	if err != nil {
@@ -311,6 +379,9 @@ func postNotify(t *testing.T, url, apiKey string, msg notifyRequest) (int, utils
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
+	for k, v := range extraHeaders {
+		req.Header.Set(k, v)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)
@@ -323,7 +394,16 @@ func postNotify(t *testing.T, url, apiKey string, msg notifyRequest) (int, utils
 			t.Fatalf("decode response (status %d, body %q): %v", resp.StatusCode, string(raw), err)
 		}
 	}
-	return resp.StatusCode, out
+	return resp.StatusCode, out, resp.Header
+}
+
+// postNotify POSTs a notifyRequest JSON body, authenticated with apiKey, to
+// the given URL (normally .../v1/notify/email) and returns the status code
+// and decoded API response.
+func postNotify(t *testing.T, url, apiKey string, msg notifyRequest) (int, utils_APIResponse) {
+	t.Helper()
+	status, resp, _ := doNotify(t, url, apiKey, msg, nil)
+	return status, resp
 }
 
 // utils_APIResponse mirrors utils.APIResponse for decoding handler responses.
@@ -757,18 +837,468 @@ func TestIntegration_SMTPFailureToDLQToReplay(t *testing.T) {
 // omitted to keep the integration surface focused and deterministic.
 
 // -----------------------------------------------------------------------------
+// Scenario 7: Unauthenticated request -> 401, no workflow ever started
+// -----------------------------------------------------------------------------
+
+func TestIntegration_Unauthenticated401(t *testing.T) {
+	c := dialOrSkip(t)
+
+	mock := testsupport.NewMockSMTPServer(t)
+	provider := providerNameFor(t, "default")
+	const from = "noreply@beacon.test"
+
+	bundle := newBundle(smtpProvider{
+		name:      provider,
+		host:      mock.Host(),
+		port:      mock.Port(),
+		from:      from,
+		fromName:  "Beacon",
+		isDefault: true,
+	})
+	authReg := auth.NewRegistry(bundle)
+	providers := notifier.NewProviderRegistry(bundle)
+
+	// Start a worker so that if (incorrectly) a workflow were started, delivery
+	// could happen -- making the "no delivery" assertion meaningful.
+	startWorker(t, c, provider, func() notifier.Sender {
+		return emailServiceForMock(mock, from, "Beacon")
+	})
+
+	notifyHandler := &api.NotifyHandler{
+		TemporalClient: c, Channels: channel.NewRegistry(),
+		Providers: providers, Limiter: policy.NewMemoryLimiter(nil), Logger: testLogger(),
+	}
+	srv := newServer(t, notifyHandler, authReg, nil, nil)
+
+	// No Authorization header at all (apiKey "" tells postNotify to omit it).
+	status, resp := postNotify(t, srv.URL+"/v1/notify/email", "", notifyRequest{
+		To:      "dave@example.com",
+		Subject: "Should be rejected",
+		Body:    "No API key presented; must never be delivered.",
+	})
+	if status != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with no Authorization header, got %d (resp: %+v)", status, resp)
+	}
+	if resp.Success {
+		t.Errorf("expected success=false, got %+v", resp)
+	}
+	if !strings.Contains(resp.Error, "missing API key") {
+		t.Errorf(`expected error to contain "missing API key", got %q`, resp.Error)
+	}
+
+	// No workflow should ever have started, so no delivery -- poll briefly.
+	if msgs := waitForMessages(mock, 1, 2*time.Second); len(msgs) != 0 {
+		t.Errorf("expected no SMTP delivery for unauthenticated request, got %d: %+v", len(msgs), msgs)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Scenario 8: Provider outside the service's allowlist -> 403
+// -----------------------------------------------------------------------------
+
+func TestIntegration_ForeignProvider403(t *testing.T) {
+	c := dialOrSkip(t)
+
+	mock := testsupport.NewMockSMTPServer(t)
+	provider := providerNameFor(t, "default")
+	const from = "noreply@beacon.test"
+
+	bundle := newBundle(smtpProvider{
+		name:      provider,
+		host:      mock.Host(),
+		port:      mock.Port(),
+		from:      from,
+		fromName:  "Beacon",
+		isDefault: true,
+	})
+	authReg := auth.NewRegistry(bundle)
+	providers := notifier.NewProviderRegistry(bundle)
+
+	startWorker(t, c, provider, func() notifier.Sender {
+		return emailServiceForMock(mock, from, "Beacon")
+	})
+
+	notifyHandler := &api.NotifyHandler{
+		TemporalClient: c, Channels: channel.NewRegistry(),
+		Providers: providers, Limiter: policy.NewMemoryLimiter(nil), Logger: testLogger(),
+	}
+	srv := newServer(t, notifyHandler, authReg, nil, nil)
+
+	status, resp := postNotify(t, srv.URL+"/v1/notify/email", testAPIKey, notifyRequest{
+		To:       "erin@example.com",
+		Subject:  "Should be rejected",
+		Body:     "Provider not in this service's allowlist.",
+		Provider: "not-in-allowlist",
+	})
+	if status != http.StatusForbidden {
+		t.Fatalf("expected 403 for a provider outside the allowlist, got %d (resp: %+v)", status, resp)
+	}
+	if !strings.Contains(resp.Error, "not allowed") {
+		t.Errorf(`expected error to contain "not allowed", got %q`, resp.Error)
+	}
+
+	if msgs := waitForMessages(mock, 1, 2*time.Second); len(msgs) != 0 {
+		t.Errorf("expected no SMTP delivery for foreign-provider request, got %d: %+v", len(msgs), msgs)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Scenario 9: Rate limit burst exhausted -> 429 with Retry-After
+// -----------------------------------------------------------------------------
+
+func TestIntegration_RateLimit429(t *testing.T) {
+	c := dialOrSkip(t)
+
+	mock := testsupport.NewMockSMTPServer(t)
+	provider := providerNameFor(t, "default")
+	const from = "noreply@beacon.test"
+
+	// rpm=2 means the token bucket starts with exactly 2 tokens (see
+	// policy.MemoryLimiter.Allow), so 2 immediate requests are allowed and a
+	// third, sent back-to-back, is not.
+	bundle := newBundleWithServices(
+		[]smtpProvider{{
+			name: provider, host: mock.Host(), port: mock.Port(),
+			from: from, fromName: "Beacon", isDefault: true,
+		}},
+		serviceSpec{
+			service: "integration-test", tenant: "it", apiKey: testAPIKey,
+			providers: []string{provider}, defaultProvider: provider,
+			rate: config.RateConfig{RPM: 2, Daily: 1000},
+		},
+	)
+	authReg := auth.NewRegistry(bundle)
+	providers := notifier.NewProviderRegistry(bundle)
+
+	startWorker(t, c, provider, func() notifier.Sender {
+		return emailServiceForMock(mock, from, "Beacon")
+	})
+
+	// A fresh *policy.MemoryLimiter per test, matching the harness's
+	// per-server-instance isolation (the in-memory limiter is scoped to the
+	// process running it, exactly like a single production server instance).
+	notifyHandler := &api.NotifyHandler{
+		TemporalClient: c, Channels: channel.NewRegistry(),
+		Providers: providers, Limiter: policy.NewMemoryLimiter(nil), Logger: testLogger(),
+	}
+	srv := newServer(t, notifyHandler, authReg, nil, nil)
+
+	msg := notifyRequest{To: "frank@example.com", Subject: "Rate me", Body: "hello"}
+
+	status1, resp1 := postNotify(t, srv.URL+"/v1/notify/email", testAPIKey, msg)
+	if status1 != http.StatusAccepted {
+		t.Fatalf("expected 202 for request 1/2 within the rpm=2 burst, got %d (resp: %+v)", status1, resp1)
+	}
+	status2, resp2 := postNotify(t, srv.URL+"/v1/notify/email", testAPIKey, msg)
+	if status2 != http.StatusAccepted {
+		t.Fatalf("expected 202 for request 2/2 within the rpm=2 burst, got %d (resp: %+v)", status2, resp2)
+	}
+
+	status3, resp3, hdr3 := doNotify(t, srv.URL+"/v1/notify/email", testAPIKey, msg, nil)
+	if status3 != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 for request 3 (rpm=2 burst exhausted), got %d (resp: %+v)", status3, resp3)
+	}
+	if hdr3.Get("Retry-After") == "" {
+		t.Errorf("expected a Retry-After header on the 429 response, got none (headers: %+v)", hdr3)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Scenario 10: Idempotency-Key dedupe -> exactly one delivery
+// -----------------------------------------------------------------------------
+
+func TestIntegration_IdempotentDuplicate(t *testing.T) {
+	c := dialOrSkip(t)
+
+	mock := testsupport.NewMockSMTPServer(t)
+	provider := providerNameFor(t, "default")
+	const from = "noreply@beacon.test"
+
+	bundle := newBundle(smtpProvider{
+		name:      provider,
+		host:      mock.Host(),
+		port:      mock.Port(),
+		from:      from,
+		fromName:  "Beacon",
+		isDefault: true,
+	})
+	authReg := auth.NewRegistry(bundle)
+	providers := notifier.NewProviderRegistry(bundle)
+
+	startWorker(t, c, provider, func() notifier.Sender {
+		return emailServiceForMock(mock, from, "Beacon")
+	})
+
+	notifyHandler := &api.NotifyHandler{
+		TemporalClient: c, Channels: channel.NewRegistry(),
+		Providers: providers, Limiter: policy.NewMemoryLimiter(nil), Logger: testLogger(),
+	}
+	srv := newServer(t, notifyHandler, authReg, nil, nil)
+
+	idemKey := "idem-" + uniqueSuffix()
+	msg := notifyRequest{To: "grace@example.com", Subject: "Only once", Body: "Idempotent send."}
+	headers := map[string]string{"Idempotency-Key": idemKey}
+
+	status1, resp1, _ := doNotify(t, srv.URL+"/v1/notify/email", testAPIKey, msg, headers)
+	if status1 != http.StatusAccepted {
+		t.Fatalf("expected 202 for the first request, got %d (resp: %+v)", status1, resp1)
+	}
+	if dup, _ := resp1.Data["duplicate"].(bool); dup {
+		t.Errorf("expected duplicate=false on the first request, got %+v", resp1.Data)
+	}
+
+	status2, resp2, _ := doNotify(t, srv.URL+"/v1/notify/email", testAPIKey, msg, headers)
+	if status2 != http.StatusAccepted {
+		t.Fatalf("expected 202 for the second (duplicate) request, got %d (resp: %+v)", status2, resp2)
+	}
+	if dup, _ := resp2.Data["duplicate"].(bool); !dup {
+		t.Errorf("expected duplicate=true on the second request, got %+v", resp2.Data)
+	}
+
+	// Exactly one message must be delivered: wait for the first delivery, then
+	// a short negative window rules out a second.
+	if msgs := waitForMessages(mock, 1, deliverTimeout); len(msgs) == 0 {
+		t.Fatalf("expected at least one delivered message, got none within %s", deliverTimeout)
+	}
+	if msgs := waitForMessages(mock, 2, 2*time.Second); len(msgs) != 1 {
+		t.Errorf("expected exactly one delivered message, got %d: %+v", len(msgs), msgs)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Scenario 11: DLQ is tenant-scoped -- a tenant cannot see or replay another
+// tenant's failed workflow.
+// -----------------------------------------------------------------------------
+
+func TestIntegration_DLQTenantScoping(t *testing.T) {
+	c := dialOrSkip(t)
+
+	provider := providerNameFor(t, "flaky")
+	const from = "noreply@beacon.test"
+	const fromName = "Beacon"
+	const tenantAKey = "bk_dlqa1_tenantAsecret"
+	const tenantBKey = "bk_dlqb1_tenantBsecret"
+
+	// Tenant A's provider points at a dead port (127.0.0.1:1 -> connection
+	// refused, so each activity attempt fails fast), mirroring
+	// TestIntegration_SMTPFailureToDLQToReplay's mechanics; tenant B has no
+	// provider access at all -- it only ever queries/replays DLQ endpoints.
+	bundle := newBundleWithServices(
+		[]smtpProvider{{
+			name: provider, host: "127.0.0.1", port: 1,
+			from: from, fromName: fromName, isDefault: true,
+		}},
+		serviceSpec{
+			service: "tenant-a-service", tenant: "tenant-a", apiKey: tenantAKey,
+			providers: []string{provider}, defaultProvider: provider,
+			rate: config.RateConfig{RPM: 1000, Daily: 100000},
+		},
+		serviceSpec{
+			service: "tenant-b-service", tenant: "tenant-b", apiKey: tenantBKey,
+			rate: config.RateConfig{RPM: 1000, Daily: 100000},
+		},
+	)
+	authReg := auth.NewRegistry(bundle)
+	providers := notifier.NewProviderRegistry(bundle)
+
+	startWorker(t, c, provider, func() notifier.Sender {
+		return emailServiceForAddr("127.0.0.1", 1, from, fromName)
+	})
+
+	dlqService := dlq.NewDLQService(c, namespace, testLogger())
+	dlqHandler := api.NewDLQHandler(dlqService, testLogger())
+	notifyHandler := &api.NotifyHandler{
+		TemporalClient: c, Channels: channel.NewRegistry(),
+		Providers: providers, Limiter: policy.NewMemoryLimiter(nil), Logger: testLogger(),
+	}
+	srv := newServer(t, notifyHandler, authReg, dlqHandler, nil)
+
+	// Tenant A sends a notification whose delivery will fail repeatedly.
+	status, resp := postNotify(t, srv.URL+"/v1/notify/email", tenantAKey, notifyRequest{
+		To:      "henry@example.com",
+		Subject: "Tenant A failing send",
+		Body:    "Will land in the DLQ.",
+	})
+	if status != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d (resp: %+v)", status, resp)
+	}
+	workflowID, _ := resp.Data["workflow_id"].(string)
+	if workflowID == "" {
+		t.Fatalf("expected workflow_id in response, got %+v", resp.Data)
+	}
+
+	finalStatus := waitTerminalFailed(t, c, workflowID, terminalTimeout)
+	if finalStatus != enumspb.WORKFLOW_EXECUTION_STATUS_FAILED &&
+		finalStatus != enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT {
+		t.Fatalf("workflow %s did not reach terminal FAILED/TIMED_OUT within %s (last status: %v)",
+			workflowID, terminalTimeout, finalStatus)
+	}
+
+	// Poll (as tenant A) until the failure is visible at all, so a slow
+	// ListClosedWorkflow index can't produce a false-negative "B can't see it"
+	// result below.
+	type failuresResp struct {
+		Data struct {
+			Failures []dlq.FailedNotification `json:"failures"`
+		} `json:"data"`
+	}
+	foundForA := false
+	dlqDeadline := time.Now().Add(15 * time.Second)
+	for {
+		st, body := getJSONAs(t, srv.URL+"/v1/dlq/failed?provider="+provider, tenantAKey)
+		if st != http.StatusOK {
+			t.Fatalf("GET /v1/dlq/failed (tenant A) -> %d, body: %s", st, body)
+		}
+		var parsed failuresResp
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			t.Fatalf("decode /dlq/failed body %q: %v", string(body), err)
+		}
+		for _, f := range parsed.Data.Failures {
+			if f.WorkflowID == workflowID {
+				foundForA = true
+			}
+		}
+		if foundForA || time.Now().After(dlqDeadline) {
+			break
+		}
+		time.Sleep(pollInterval)
+	}
+	if !foundForA {
+		t.Fatalf("failed workflow %s did not appear in tenant A's /v1/dlq/failed within deadline", workflowID)
+	}
+
+	// Tenant B must not see tenant A's failure: the handler hard-scopes
+	// filter.Tenant to the caller's own tenant for non-admin identities.
+	stB, bodyB := getJSONAs(t, srv.URL+"/v1/dlq/failed?provider="+provider, tenantBKey)
+	if stB != http.StatusOK {
+		t.Fatalf("GET /v1/dlq/failed (tenant B) -> %d, body: %s", stB, bodyB)
+	}
+	var parsedB failuresResp
+	if err := json.Unmarshal(bodyB, &parsedB); err != nil {
+		t.Fatalf("decode /dlq/failed body %q: %v", string(bodyB), err)
+	}
+	for _, f := range parsedB.Data.Failures {
+		if f.WorkflowID == workflowID {
+			t.Fatalf("tenant B unexpectedly saw tenant A's failed workflow %s in DLQ results", workflowID)
+		}
+	}
+
+	// Tenant B's replay attempt must not disclose the workflow's existence: 404.
+	replayStatusB, replayBodyB := postJSONAs(t, srv.URL+"/v1/dlq/replay/"+workflowID, tenantBKey, nil)
+	if replayStatusB != http.StatusNotFound {
+		t.Fatalf("expected 404 replaying tenant A's workflow as tenant B, got %d (body: %s)", replayStatusB, replayBodyB)
+	}
+
+	// Tenant A's replay attempt must succeed (202) -- even though the
+	// replayed send may fail again against the same dead port, only the
+	// dispatch is asserted here.
+	replayStatusA, replayBodyA := postJSONAs(t, srv.URL+"/v1/dlq/replay/"+workflowID, tenantAKey, nil)
+	if replayStatusA != http.StatusAccepted {
+		t.Fatalf("expected 202 replaying tenant A's own workflow, got %d (body: %s)", replayStatusA, replayBodyA)
+	}
+	var replayParsed struct {
+		Success bool             `json:"success"`
+		Data    dlq.ReplayResult `json:"data"`
+	}
+	if err := json.Unmarshal(replayBodyA, &replayParsed); err != nil {
+		t.Fatalf("decode replay body %q: %v", string(replayBodyA), err)
+	}
+	if !replayParsed.Success {
+		t.Fatalf("expected success=true for tenant A's replay, got %+v", replayParsed)
+	}
+	if replayParsed.Data.OriginalWorkflowID != workflowID {
+		t.Errorf("expected original_workflow_id %q, got %q", workflowID, replayParsed.Data.OriginalWorkflowID)
+	}
+	if replayParsed.Data.NewWorkflowID == "" {
+		t.Errorf("expected a non-empty new_workflow_id, got %+v", replayParsed.Data)
+	}
+	if replayParsed.Data.Provider != provider {
+		t.Errorf("expected replay provider %q, got %q", provider, replayParsed.Data.Provider)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Scenario 12: Service policy's From lock overrides the provider's own
+// configured sender identity on the delivered envelope.
+// -----------------------------------------------------------------------------
+
+func TestIntegration_PolicyFromLock(t *testing.T) {
+	c := dialOrSkip(t)
+
+	mock := testsupport.NewMockSMTPServer(t)
+	provider := providerNameFor(t, "default")
+	// Deliberately different from the policy lock below, so seeing
+	// "locked@corp.com" on the wire proves the policy override won -- not
+	// just the provider's own default passing through unchanged.
+	const providerFrom = "provider-default@beacon.test"
+	const lockedFrom = "locked@corp.com"
+
+	bundle := newBundleWithServices(
+		[]smtpProvider{{
+			name: provider, host: mock.Host(), port: mock.Port(),
+			from: providerFrom, fromName: "Provider Default", isDefault: true,
+		}},
+		serviceSpec{
+			service: "integration-test", tenant: "it", apiKey: testAPIKey,
+			providers: []string{provider}, defaultProvider: provider,
+			rate: config.RateConfig{RPM: 1000, Daily: 100000},
+			from: &config.FromIdentity{Address: lockedFrom, Name: "Locked"},
+		},
+	)
+	authReg := auth.NewRegistry(bundle)
+	providers := notifier.NewProviderRegistry(bundle)
+
+	startWorker(t, c, provider, func() notifier.Sender {
+		return emailServiceForMock(mock, providerFrom, "Provider Default")
+	})
+
+	notifyHandler := &api.NotifyHandler{
+		TemporalClient: c, Channels: channel.NewRegistry(),
+		Providers: providers, Limiter: policy.NewMemoryLimiter(nil), Logger: testLogger(),
+	}
+	srv := newServer(t, notifyHandler, authReg, nil, nil)
+
+	status, resp := postNotify(t, srv.URL+"/v1/notify/email", testAPIKey, notifyRequest{
+		To:      "ivy@example.com",
+		Subject: "Locked sender identity",
+		Body:    "From must be policy-locked regardless of provider defaults.",
+	})
+	if status != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d (resp: %+v)", status, resp)
+	}
+
+	msgs := waitForMessages(mock, 1, deliverTimeout)
+	if len(msgs) == 0 {
+		t.Fatalf("expected at least one delivered message, got none within %s", deliverTimeout)
+	}
+	if got := msgs[0].From; got != lockedFrom {
+		t.Errorf("expected envelope From %q (policy lock), got %q", lockedFrom, got)
+	}
+}
+
+// -----------------------------------------------------------------------------
 // HTTP helpers
 // -----------------------------------------------------------------------------
 
-// getJSON performs an authenticated GET (see dlqAdminToken) and returns the
-// status code and raw body. Currently only exercised against /v1/dlq/* routes.
+// getJSON performs an authenticated GET as the admin token (see
+// dlqAdminToken) and returns the status code and raw body. Currently only
+// exercised against /v1/dlq/* routes.
 func getJSON(t *testing.T, url string) (int, []byte) {
+	t.Helper()
+	return getJSONAs(t, url, dlqAdminToken)
+}
+
+// getJSONAs performs an authenticated GET with an arbitrary caller apiKey
+// (a real service key, not necessarily the admin token) and returns the
+// status code and raw body. Used by the DLQ tenant-scoping scenario to query
+// /v1/dlq/failed as different tenants' service identities.
+func getJSONAs(t *testing.T, url, apiKey string) (int, []byte) {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		t.Fatalf("build GET %s: %v", url, err)
 	}
-	req.Header.Set("Authorization", "Bearer "+dlqAdminToken)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
@@ -778,10 +1308,20 @@ func getJSON(t *testing.T, url string) (int, []byte) {
 	return resp.StatusCode, body
 }
 
-// postJSON performs an authenticated POST (see dlqAdminToken) with an
-// optional JSON body and returns the status code and raw body. Currently only
-// exercised against /v1/dlq/* routes.
+// postJSON performs an authenticated POST as the admin token (see
+// dlqAdminToken) with an optional JSON body and returns the status code and
+// raw body. Currently only exercised against /v1/dlq/* routes.
 func postJSON(t *testing.T, url string, payload any) (int, []byte) {
+	t.Helper()
+	return postJSONAs(t, url, dlqAdminToken, payload)
+}
+
+// postJSONAs performs an authenticated POST with an arbitrary caller apiKey
+// (a real service key, not necessarily the admin token) and an optional JSON
+// body, returning the status code and raw body. Used by the DLQ
+// tenant-scoping scenario to attempt /v1/dlq/replay/* as different tenants'
+// service identities.
+func postJSONAs(t *testing.T, url, apiKey string, payload any) (int, []byte) {
 	t.Helper()
 	var rdr io.Reader
 	if payload != nil {
@@ -795,7 +1335,7 @@ func postJSON(t *testing.T, url string, payload any) (int, []byte) {
 	if err != nil {
 		t.Fatalf("build POST %s: %v", url, err)
 	}
-	req.Header.Set("Authorization", "Bearer "+dlqAdminToken)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 	if rdr != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

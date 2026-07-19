@@ -13,6 +13,8 @@ func TestParseWorkerSpec(t *testing.T) {
 		{"email", "", "", true},
 		{"", "", "", true},
 		{"-sendgrid", "", "", true},
+		{"email-", "", "", true},
+		{"email--x", "email", "-x", false},
 	}
 	for _, tc := range cases {
 		ch, prov, err := ParseWorkerSpec(tc.spec)
