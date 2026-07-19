@@ -20,6 +20,8 @@ func (emailChannel) TaskQueue(provider string) string { return TaskQueue("email"
 
 func (emailChannel) WorkflowName() string { return "SendEmailWorkflow" }
 
+const maxCopyRecipients = 50
+
 type emailRequest struct {
 	To       string   `json:"to"`
 	CC       []string `json:"cc"`
@@ -45,9 +47,17 @@ func (emailChannel) DecodeRequest(body []byte) (*Request, error) {
 	if req.Subject == "" {
 		return nil, fmt.Errorf("missing required field: subject")
 	}
-	for _, addr := range append(append([]string{}, req.CC...), req.BCC...) {
+	if len(req.CC)+len(req.BCC) > maxCopyRecipients {
+		return nil, fmt.Errorf("too many recipients in cc/bcc (max %d)", maxCopyRecipients)
+	}
+	for _, addr := range req.CC {
 		if _, err := mail.ParseAddress(addr); err != nil {
-			return nil, fmt.Errorf("invalid email address in cc/bcc: %s", addr)
+			return nil, fmt.Errorf("invalid email address in cc: %s", addr)
+		}
+	}
+	for _, addr := range req.BCC {
+		if _, err := mail.ParseAddress(addr); err != nil {
+			return nil, fmt.Errorf("invalid email address in bcc: %s", addr)
 		}
 	}
 	return &Request{

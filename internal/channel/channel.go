@@ -20,6 +20,7 @@ type Channel interface {
 }
 
 // Registry maps channel name -> implementation.
+// Registries are built once at startup and read concurrently; treat as read-only after NewRegistry.
 type Registry map[string]Channel
 
 // NewRegistry registers all built-in channels.
