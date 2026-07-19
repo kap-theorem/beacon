@@ -30,8 +30,13 @@ const smtpSecretJSON = `{
 func newInfisicalServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Return a single secret whose value is the SMTP config JSON.
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("secretPath") != "/beacon/providers/email" {
+			// Tenants/services aren't under test here; keep the bundle valid but empty.
+			json.NewEncoder(w).Encode(map[string]any{"secrets": []any{}})
+			return
+		}
+		// Return a single secret whose value is the SMTP config JSON.
 		resp := map[string]any{
 			"secrets": []map[string]any{
 				{

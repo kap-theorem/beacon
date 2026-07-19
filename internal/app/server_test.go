@@ -46,6 +46,7 @@ func buildTestConfigService(t *testing.T) *config.ConfigService {
 	t.Setenv("DEV_SMTP_HOST", "localhost")
 	t.Setenv("DEV_SMTP_PORT", "587")
 	t.Setenv("DEV_SMTP_NAME", "test")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
 	svc, err := config.InitializeConfigService(context.Background(), slog.Default())
 	if err != nil {
 		t.Fatalf("failed to build dev ConfigService: %v", err)

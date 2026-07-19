@@ -39,6 +39,10 @@ func newWatcherTestServer(t *testing.T) *httptest.Server {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("secretPath") != "/beacon/providers/email" {
+			fmt.Fprint(w, `{"secrets": []}`)
+			return
+		}
 		fmt.Fprint(w, body)
 	}))
 	return srv
@@ -130,6 +134,7 @@ func TestConfigWatcher_OnChangeNotCalledOnSameRevision(t *testing.T) {
 func TestConfigWatcher_DevModeNeverCallsOnChange(t *testing.T) {
 	t.Setenv("DEV_MODE", "true")
 	t.Setenv("DEV_SMTP_HOST", "localhost")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
 
 	devSvc, err := InitializeConfigService(context.Background(), testLogger())
 	if err != nil {
@@ -234,6 +239,10 @@ func TestConfigWatcher_WarnOnNonDevError(t *testing.T) {
 		}
 		// Subsequent calls: success → revision bump → onChange
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("secretPath") != "/beacon/providers/email" {
+			fmt.Fprint(w, `{"secrets": []}`)
+			return
+		}
 		fmt.Fprint(w, string(goodResp))
 	}))
 	defer srv.Close()

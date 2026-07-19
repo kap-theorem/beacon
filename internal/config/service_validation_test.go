@@ -151,3 +151,39 @@ func TestValidateBundleRefs(t *testing.T) {
 		}
 	})
 }
+
+func TestBuildDevBundle_SynthesizesServiceAndTenant(t *testing.T) {
+	t.Setenv("DEV_MODE", "true")
+	t.Setenv("DEV_SMTP_HOST", "localhost")
+	t.Setenv("DEV_SMTP_PORT", "2525")
+	t.Setenv("DEV_SMTP_USERNAME", "u")
+	t.Setenv("DEV_SMTP_PASSWORD", "p")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
+
+	bundle, err := buildDevBundle()
+	if err != nil {
+		t.Fatalf("buildDevBundle: %v", err)
+	}
+	if len(bundle.Services) != 1 || bundle.Services["dev"] == nil {
+		t.Fatalf("expected synthesized dev service, got %+v", bundle.Services)
+	}
+	svc := bundle.Services["dev"]
+	if svc.Tenant != "dev" || !svc.Enabled {
+		t.Fatalf("unexpected service: %+v", svc)
+	}
+	pol := svc.Channels["email"]
+	if pol == nil || pol.DefaultProvider != "dev" || pol.Rate.RPM != 1000 || pol.Rate.Daily != 100000 {
+		t.Fatalf("unexpected policy: %+v", pol)
+	}
+	if _, ok := bundle.Tenants["dev"]; !ok {
+		t.Fatal("expected synthesized dev tenant")
+	}
+}
+
+func TestBuildDevBundle_RequiresDevAPIKey(t *testing.T) {
+	t.Setenv("DEV_SMTP_HOST", "localhost")
+	t.Setenv("DEV_API_KEY", "")
+	if _, err := buildDevBundle(); err == nil {
+		t.Fatal("expected error when DEV_API_KEY unset")
+	}
+}

@@ -14,6 +14,7 @@ import (
 func TestRefreshConfig_DevModeSkipsInfisical(t *testing.T) {
 	t.Setenv("DEV_MODE", "true")
 	t.Setenv("DEV_SMTP_HOST", "localhost")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc, err := InitializeConfigService(context.Background(), logger)

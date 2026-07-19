@@ -58,6 +58,44 @@ func authResponse(token string, expiresIn int64) string {
 	return string(b)
 }
 
+// infisicalMultiPathResponse returns the JSON body Infisical should return for the
+// given secretPath, now that loadFromInfisical fetches three separate paths
+// (/beacon/providers/email, /beacon/tenants, /beacon/services) instead of one.
+// providerName is served at /beacon/providers/email and referenced by the
+// synthesized /beacon/services fixture so ValidateBundleRefs has no unknown-provider
+// warning to reconcile.
+func infisicalMultiPathResponse(secretPath, providerName string) string {
+	switch secretPath {
+	case "/beacon/providers/email":
+		return infisicalSecretsResponse(map[string]string{
+			providerName: validProviderJSON(providerName),
+		})
+	case "/beacon/tenants":
+		return infisicalSecretsResponse(map[string]string{
+			"payments": `{"tenant":"payments","name":"Payments"}`,
+		})
+	case "/beacon/services":
+		return infisicalSecretsResponse(map[string]string{
+			"billing-api": fmt.Sprintf(`{
+  "service": "billing-api",
+  "tenant": "payments",
+  "enabled": true,
+  "keys": [{"id": "k1", "sha256": "%s", "state": "active"}],
+  "channels": {
+    "email": {
+      "providers": ["%s"],
+      "default_provider": "%s",
+      "from": {"address": "billing@corp.com", "name": "Billing"},
+      "rate": {"rpm": 60, "daily": 5000}
+    }
+  }
+}`, testHash, providerName, providerName),
+		})
+	default:
+		return `{"secrets": []}`
+	}
+}
+
 // --- getAccessToken tests ---
 
 func TestGetAccessToken_ClientSecretPath(t *testing.T) {
@@ -278,9 +316,7 @@ func TestFetchConfigs_408_Transient(t *testing.T) {
 func TestLoadFromInfisical_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, infisicalSecretsResponse(map[string]string{
-			"p1": validProviderJSON("p1"),
-		}))
+		fmt.Fprint(w, infisicalMultiPathResponse(r.URL.Query().Get("secretPath"), "p1"))
 	}))
 	defer srv.Close()
 
@@ -317,9 +353,7 @@ func TestLoadFromInfisical_ValidationError(t *testing.T) {
 func TestLoadWithRetry_SuccessFirstTry(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, infisicalSecretsResponse(map[string]string{
-			"p1": validProviderJSON("p1"),
-		}))
+		fmt.Fprint(w, infisicalMultiPathResponse(r.URL.Query().Get("secretPath"), "p1"))
 	}))
 	defer srv.Close()
 
@@ -386,9 +420,7 @@ func TestLoadWithRetry_TransientRetry(t *testing.T) {
 		}
 		// Secrets endpoint: success after auth
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, infisicalSecretsResponse(map[string]string{
-			"p1": validProviderJSON("p1"),
-		}))
+		fmt.Fprint(w, infisicalMultiPathResponse(r.URL.Query().Get("secretPath"), "p1"))
 	}))
 	defer srv.Close()
 
@@ -578,9 +610,7 @@ func TestGetClientConfig_NotInitialized(t *testing.T) {
 func TestRefreshConfig_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, infisicalSecretsResponse(map[string]string{
-			"p1": validProviderJSON("p1"),
-		}))
+		fmt.Fprint(w, infisicalMultiPathResponse(r.URL.Query().Get("secretPath"), "p1"))
 	}))
 	defer srv.Close()
 
