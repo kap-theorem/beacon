@@ -29,7 +29,7 @@ func Middleware(reg *Registry) func(http.Handler) http.Handler {
 				return
 			}
 			if admin := os.Getenv("ADMIN_TOKEN"); admin != "" &&
-				subtle.ConstantTimeCompare([]byte(token), []byte(admin)) == 1 {
+				subtle.ConstantTimeCompare([]byte(HashKey(token)), []byte(HashKey(admin))) == 1 {
 				ctx := context.WithValue(r.Context(), ctxKey{}, &Identity{Service: "admin", Admin: true, Enabled: true})
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
@@ -49,6 +49,11 @@ func Middleware(reg *Registry) func(http.Handler) http.Handler {
 	}
 }
 
+// bearerToken extracts the presented key from Authorization: Bearer or
+// X-API-Key, preferring the former when both are set. The "Bearer " scheme
+// match is deliberately case-sensitive and exact (all callers are machine-
+// minted clients, not browsers), so "bearer ..." or "Basic ..." fall through
+// to X-API-Key rather than being tolerated as Bearer.
 func bearerToken(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimPrefix(h, "Bearer ")

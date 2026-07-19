@@ -59,3 +59,37 @@ func TestReload_SwapsKeys(t *testing.T) {
 		t.Fatal("key must be gone after reload with empty bundle")
 	}
 }
+
+func TestAuthenticate_RotationOverlap(t *testing.T) {
+	b := &config.ConfigBundle{
+		Services: map[string]*config.ServiceConfig{
+			"billing-api": {
+				Service: "billing-api", Tenant: "payments", Enabled: true,
+				Keys: []config.KeyEntry{
+					{ID: "k1", SHA256: HashKey("bk_k1_secret123"), State: "active"},
+					{ID: "k2", SHA256: HashKey("bk_k2_secret456"), State: "active"},
+				},
+				Channels: map[string]*config.ChannelPolicy{
+					"email": {Providers: []string{"sendgrid"}, DefaultProvider: "sendgrid",
+						Rate: config.RateConfig{RPM: 60, Daily: 5000}},
+				},
+			},
+		},
+	}
+	r := NewRegistry(b)
+
+	identK1, ok := r.Authenticate("bk_k1_secret123")
+	if !ok {
+		t.Fatal("expected k1 to authenticate during rotation overlap")
+	}
+	identK2, ok := r.Authenticate("bk_k2_secret456")
+	if !ok {
+		t.Fatal("expected k2 to authenticate during rotation overlap")
+	}
+
+	for name, ident := range map[string]*Identity{"k1": identK1, "k2": identK2} {
+		if ident.Service != "billing-api" || ident.Tenant != "payments" || !ident.Enabled {
+			t.Fatalf("%s: unexpected identity: %+v", name, ident)
+		}
+	}
+}

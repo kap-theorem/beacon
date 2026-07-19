@@ -11,6 +11,8 @@ import (
 )
 
 // Identity is the authenticated caller attached to the request context.
+// Identity and its Channels map are shared across requests and with the
+// config bundle; treat as read-only.
 type Identity struct {
 	Service  string
 	Tenant   string
