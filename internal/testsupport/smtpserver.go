@@ -3,6 +3,7 @@ package testsupport
 
 import (
 	"bufio"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -25,6 +26,8 @@ type MockSMTPServer struct {
 	messages    []CapturedMessage
 	connections atomic.Int64
 	active      map[net.Conn]struct{}
+	rejectCode  int
+	rejectMsg   string
 }
 
 // NewMockSMTPServer starts the server on a random localhost port and registers
@@ -74,6 +77,28 @@ func (s *MockSMTPServer) CloseActiveConns() {
 		}
 		_ = c.Close()
 	}
+}
+
+// Stop closes the server's listening socket so no further connections can be
+// accepted. Already-active connections are left open; pair with
+// CloseActiveConns to also drop those. Safe to call more than once (a second
+// close is a no-op error that Stop discards).
+func (s *MockSMTPServer) Stop() {
+	_ = s.ln.Close()
+}
+
+// RejectNextMail arms the server to reject the next MAIL FROM command it
+// receives, on any connection, with the given SMTP status code and message
+// instead of the usual "250 OK". This simulates a protocol-level rejection
+// (bad sender, policy reject, mailbox unavailable, etc.) so callers can test
+// client-side handling of a non-transport SMTP failure that must not be
+// retried. The arming is consumed by the next MAIL FROM it sees and cleared
+// immediately after.
+func (s *MockSMTPServer) RejectNextMail(code int, msg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rejectCode = code
+	s.rejectMsg = msg
 }
 
 // Messages returns a copy of all captured messages.
@@ -128,8 +153,16 @@ func (s *MockSMTPServer) handle(conn net.Conn) {
 			write("250-mock.local")
 			write("250 OK")
 		case strings.HasPrefix(cmd, "MAIL FROM"):
-			msg.From = extractAddr(line)
-			write("250 OK")
+			s.mu.Lock()
+			rejectCode, rejectMsg := s.rejectCode, s.rejectMsg
+			s.rejectCode, s.rejectMsg = 0, ""
+			s.mu.Unlock()
+			if rejectCode != 0 {
+				write(fmt.Sprintf("%d %s", rejectCode, rejectMsg))
+			} else {
+				msg.From = extractAddr(line)
+				write("250 OK")
+			}
 		case strings.HasPrefix(cmd, "RCPT TO"):
 			msg.To = append(msg.To, extractAddr(line))
 			write("250 OK")
