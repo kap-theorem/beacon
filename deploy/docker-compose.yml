@@ -92,8 +92,8 @@ services:
   #
   # To add a second provider (e.g. mailgun), duplicate this service block and
   # change the service name to beacon-worker-mailgun and set
-  # PROVIDER_NAME=mailgun.  Each worker polls the same Temporal task queue but
-  # routes delivery through the named provider's SMTP config loaded from
+  # WORKER_SPEC=email-mailgun.  Each worker polls the same Temporal task queue
+  # but routes delivery through the named provider's SMTP config loaded from
   # Infisical.
   # --------------------------------------------------------------------------
   beacon-worker-sendgrid:
@@ -102,7 +102,7 @@ services:
     env_file:
       - ./env/worker.env
     environment:
-      PROVIDER_NAME: sendgrid
+      WORKER_SPEC: email-sendgrid
       TEMPORAL_ADDRESS: temporal:7233
     depends_on:
       - temporal
@@ -118,9 +118,10 @@ services:
   #   3. Update deploy/cloudflared/config.yml with your TUNNEL_ID and hostname.
   #   4. See the runbook in docs/ for Access policy configuration.
   #
-  # Without Cloudflare Access policies configured in the Zero Trust dashboard,
-  # the /notify/email endpoint is an open relay to anyone who can reach the
-  # tunnel hostname.  Refer to deploy/cloudflared/config.yml for details.
+  # /v1/notify/email requires a per-service API key at the app layer; Cloudflare
+  # Access policies configured in the Zero Trust dashboard are defense-in-depth
+  # on top of that, not the only protection.  Refer to deploy/cloudflared/config.yml
+  # for details.
   # --------------------------------------------------------------------------
   cloudflared:
     image: cloudflare/cloudflared:latest

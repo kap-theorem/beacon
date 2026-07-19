@@ -29,10 +29,53 @@ type SMTPClientConfig struct {
 	AuthType    AuthType      `json:"auth_type"`
 	TLS         TLSConfig     `json:"tls"`
 	Timeout     time.Duration `json:"timeout"`
-	Categories  []string      `json:"categories,omitempty"`
 	IsDefault   bool          `json:"is_default,omitempty"`
 	FromAddress string        `json:"from_address,omitempty"`
 	FromName    string        `json:"from_name,omitempty"`
+}
+
+// KeyEntry is one API key registered to a service. Only the SHA-256 of the
+// full key (bk_<id>_<secret>) is stored; two active entries enable rotation.
+type KeyEntry struct {
+	ID     string `json:"id"`
+	SHA256 string `json:"sha256"`
+	State  string `json:"state"` // "active"
+}
+
+// FromIdentity is the policy-enforced sender identity for a service+channel.
+type FromIdentity struct {
+	Address string `json:"address"`
+	Name    string `json:"name,omitempty"`
+}
+
+// RateConfig caps a service's throughput on one channel.
+type RateConfig struct {
+	RPM   int `json:"rpm"`
+	Daily int `json:"daily"`
+}
+
+// ChannelPolicy is what a service may do on one channel.
+type ChannelPolicy struct {
+	Providers       []string      `json:"providers"`
+	DefaultProvider string        `json:"default_provider"`
+	From            *FromIdentity `json:"from,omitempty"`
+	Rate            RateConfig    `json:"rate"`
+}
+
+// ServiceConfig is one registered calling service (control-plane doc).
+type ServiceConfig struct {
+	Service  string                    `json:"service"`
+	Tenant   string                    `json:"tenant"`
+	Enabled  bool                      `json:"enabled"`
+	Keys     []KeyEntry                `json:"keys"`
+	Channels map[string]*ChannelPolicy `json:"channels"`
+}
+
+// TenantConfig is tenant metadata (a team/product owning services).
+type TenantConfig struct {
+	Tenant string `json:"tenant"`
+	Name   string `json:"name,omitempty"`
+	Owner  string `json:"owner,omitempty"`
 }
 
 type FieldError struct {
@@ -47,7 +90,9 @@ type ValidationResult struct {
 }
 
 type ConfigBundle struct {
-	SMTP      map[string]*SMTPClientConfig `json:"smtp"`
+	SMTP      map[string]*SMTPClientConfig `json:"smtp"` // email providers
+	Tenants   map[string]*TenantConfig     `json:"tenants"`
+	Services  map[string]*ServiceConfig    `json:"services"`
 	Revision  int64                        `json:"revision"`
 	Timestamp time.Time                    `json:"timestamp"`
 }

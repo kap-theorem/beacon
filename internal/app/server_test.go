@@ -10,9 +10,12 @@ import (
 	"time"
 
 	"beacon/internal/api"
+	"beacon/internal/auth"
+	"beacon/internal/channel"
 	"beacon/internal/config"
 	"beacon/internal/dlq"
 	"beacon/internal/notifier"
+	"beacon/internal/policy"
 
 	"go.temporal.io/sdk/client"
 )
@@ -31,7 +34,7 @@ func (f *fakeDLQ) QueryFailures(_ context.Context, _ dlq.FailureFilter) ([]*dlq.
 	return []*dlq.FailedNotification{}, nil
 }
 
-func (f *fakeDLQ) ReplayWorkflow(_ context.Context, _ string) (*dlq.ReplayResult, error) {
+func (f *fakeDLQ) ReplayWorkflow(_ context.Context, _, _ string) (*dlq.ReplayResult, error) {
 	return &dlq.ReplayResult{}, nil
 }
 
@@ -46,6 +49,7 @@ func buildTestConfigService(t *testing.T) *config.ConfigService {
 	t.Setenv("DEV_SMTP_HOST", "localhost")
 	t.Setenv("DEV_SMTP_PORT", "587")
 	t.Setenv("DEV_SMTP_NAME", "test")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
 	svc, err := config.InitializeConfigService(context.Background(), slog.Default())
 	if err != nil {
 		t.Fatalf("failed to build dev ConfigService: %v", err)
@@ -53,39 +57,19 @@ func buildTestConfigService(t *testing.T) *config.ConfigService {
 	return svc
 }
 
-// buildTestRegistry creates an EmailClientRegistry with a single is_default provider.
-func buildTestRegistry(t *testing.T) *notifier.EmailClientRegistry {
-	t.Helper()
-	bundle := &config.ConfigBundle{
-		SMTP: map[string]*config.SMTPClientConfig{
-			"test": {
-				Name:        "test",
-				Provider:    "test",
-				Host:        "localhost",
-				Port:        587,
-				IsDefault:   true,
-				FromAddress: "noreply@beacon.test",
-			},
-		},
-		Revision:  1,
-		Timestamp: time.Now(),
-	}
-	reg, err := notifier.NewEmailClientRegistry(bundle)
-	if err != nil {
-		t.Fatalf("failed to build registry: %v", err)
-	}
-	return reg
-}
-
 // buildTestDeps returns a ServerDeps with all non-nil fields populated.
 func buildTestDeps(t *testing.T, dlqSvc api.DLQQuerier) ServerDeps {
 	t.Helper()
 	health := config.NewHealthChecker()
-	health.SetReady(true)
+	cs := buildTestConfigService(t)
+	bundle := cs.GetConfig()
 	return ServerDeps{
 		TemporalClient: &fakeStarter{},
-		Registry:       buildTestRegistry(t),
-		ConfigService:  buildTestConfigService(t),
+		Channels:       channel.NewRegistry(),
+		Providers:      notifier.NewProviderRegistry(bundle),
+		AuthRegistry:   auth.NewRegistry(bundle),
+		Limiter:        policy.NewMemoryLimiter(nil),
+		ConfigService:  cs,
 		Health:         health,
 		DLQService:     dlqSvc,
 		Logger:         slog.New(slog.NewTextHandler(os.Stderr, nil)),
@@ -141,12 +125,30 @@ func TestBuildServerMux_DLQNil_Returns503(t *testing.T) {
 	deps := buildTestDeps(t, nil)
 	mux := BuildServerMux(deps)
 
-	req := httptest.NewRequest(http.MethodGet, "/dlq/failed", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/dlq/failed", nil)
+	req.Header.Set("Authorization", "Bearer bk_k1_devsecret") // dev-mode key from buildTestConfigService
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("/dlq/failed with nil DLQ: expected 503, got %d", rec.Code)
+		t.Errorf("/v1/dlq/failed with nil DLQ: expected 503, got %d", rec.Code)
+	}
+}
+
+// TestBuildServerMux_DLQNil_Unauthenticated401 proves that even when
+// DLQService is nil, the "unavailable" v1 DLQ routes still require auth:
+// an unauthenticated caller must be rejected with 401 before ever reaching
+// the 503 handler, so unauthenticated callers can't probe route availability.
+func TestBuildServerMux_DLQNil_Unauthenticated401(t *testing.T) {
+	deps := buildTestDeps(t, nil)
+	mux := BuildServerMux(deps)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/dlq/failed", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("/v1/dlq/failed with nil DLQ, no auth: expected 401, got %d", rec.Code)
 	}
 }
 
@@ -154,12 +156,44 @@ func TestBuildServerMux_DLQProvided_Returns200(t *testing.T) {
 	deps := buildTestDeps(t, &fakeDLQ{})
 	mux := BuildServerMux(deps)
 
-	req := httptest.NewRequest(http.MethodGet, "/dlq/failed", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/dlq/failed", nil)
+	req.Header.Set("Authorization", "Bearer bk_k1_devsecret") // dev-mode key from buildTestConfigService
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Errorf("/dlq/failed with DLQ: expected 200, got %d", rec.Code)
+		t.Errorf("/v1/dlq/failed with DLQ: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestBuildServerMux_V1DLQFailed_RequiresAuth proves GET /v1/dlq/failed is
+// behind auth.Middleware: an unauthenticated request is rejected before it
+// ever reaches DLQHandler.
+func TestBuildServerMux_V1DLQFailed_RequiresAuth(t *testing.T) {
+	deps := buildTestDeps(t, &fakeDLQ{})
+	mux := BuildServerMux(deps)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/dlq/failed", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("/v1/dlq/failed without auth: expected 401, got %d", rec.Code)
+	}
+}
+
+// TestBuildServerMux_V1DLQReplay_RequiresAuth proves POST
+// /v1/dlq/replay/{workflowID} is behind auth.Middleware.
+func TestBuildServerMux_V1DLQReplay_RequiresAuth(t *testing.T) {
+	deps := buildTestDeps(t, &fakeDLQ{})
+	mux := BuildServerMux(deps)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/dlq/replay/some-id", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("/v1/dlq/replay without auth: expected 401, got %d", rec.Code)
 	}
 }
 
@@ -176,29 +210,17 @@ func TestBuildServerMux_HealthzLive_Returns200(t *testing.T) {
 	}
 }
 
-func TestBuildServerMux_NotifyEmail_GetReturns405(t *testing.T) {
-	deps := buildTestDeps(t, nil)
-	mux := BuildServerMux(deps)
-
-	req := httptest.NewRequest(http.MethodGet, "/notify/email", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Errorf("/notify/email GET: expected 405, got %d", rec.Code)
-	}
-}
-
 func TestBuildServerMux_DLQReplay_NilDLQ_Returns503(t *testing.T) {
 	deps := buildTestDeps(t, nil)
 	mux := BuildServerMux(deps)
 
-	req := httptest.NewRequest(http.MethodPost, "/dlq/replay/some-id", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/dlq/replay/some-id", nil)
+	req.Header.Set("Authorization", "Bearer bk_k1_devsecret") // dev-mode key from buildTestConfigService
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("/dlq/replay/ with nil DLQ: expected 503, got %d", rec.Code)
+		t.Errorf("/v1/dlq/replay/ with nil DLQ: expected 503, got %d", rec.Code)
 	}
 }
 
@@ -227,5 +249,22 @@ func TestBuildServerMux_AdminConfigRefresh_Returns403WhenNoToken(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("/admin/config/refresh without token: expected 403, got %d", rec.Code)
+	}
+}
+
+// TestBuildServerMux_V1Notify_RequiresAuth proves that the production wiring in
+// BuildServerMux (not just the internal/api test mux) puts /v1/notify/{channel}
+// behind auth.Middleware: an unauthenticated request must be rejected before it
+// ever reaches NotifyHandler.
+func TestBuildServerMux_V1Notify_RequiresAuth(t *testing.T) {
+	deps := buildTestDeps(t, nil)
+	mux := BuildServerMux(deps)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/notify/email", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("/v1/notify/email without auth: expected 401, got %d", rec.Code)
 	}
 }

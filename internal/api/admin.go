@@ -1,24 +1,28 @@
 package api
 
 import (
+	"beacon/internal/auth"
 	"beacon/internal/config"
 	"beacon/internal/notifier"
 	"beacon/utils"
+	"crypto/subtle"
 	"errors"
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 )
 
 // AdminHandler exposes privileged config management endpoints.
 type AdminHandler struct {
 	ConfigService *config.ConfigService
-	Registry      *notifier.EmailClientRegistry
+	Providers     *notifier.ProviderRegistry
+	AuthRegistry  *auth.Registry
 	logger        *slog.Logger
 }
 
-func NewAdminHandler(cs *config.ConfigService, registry *notifier.EmailClientRegistry, logger *slog.Logger) *AdminHandler {
-	return &AdminHandler{ConfigService: cs, Registry: registry, logger: logger}
+func NewAdminHandler(cs *config.ConfigService, providers *notifier.ProviderRegistry, authReg *auth.Registry, logger *slog.Logger) *AdminHandler {
+	return &AdminHandler{ConfigService: cs, Providers: providers, AuthRegistry: authReg, logger: logger}
 }
 
 // HandleConfigRefresh handles POST /admin/config/refresh.
@@ -35,7 +39,8 @@ func (h *AdminHandler) HandleConfigRefresh(w http.ResponseWriter, req *http.Requ
 		return
 	}
 
-	if req.Header.Get("Authorization") != "Bearer "+adminToken {
+	presented := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
+	if subtle.ConstantTimeCompare([]byte(auth.HashKey(presented)), []byte(auth.HashKey(adminToken))) != 1 {
 		utils.WriteError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -51,14 +56,12 @@ func (h *AdminHandler) HandleConfigRefresh(w http.ResponseWriter, req *http.Requ
 	}
 
 	bundle := h.ConfigService.GetConfig()
-	if err := h.Registry.Reload(bundle); err != nil {
-		h.logger.Error("registry reload after admin refresh failed", slog.Any("error", err))
-		utils.WriteError(w, http.StatusInternalServerError, "registry reload failed")
-		return
-	}
+	h.Providers.Reload(bundle)
+	h.AuthRegistry.Reload(bundle)
 
 	utils.WriteSuccess(w, http.StatusOK, "config refreshed", map[string]any{
 		"revision":  bundle.Revision,
-		"providers": h.Registry.ProviderNames(),
+		"providers": h.Providers.Names("email"),
+		"services":  len(bundle.Services),
 	})
 }

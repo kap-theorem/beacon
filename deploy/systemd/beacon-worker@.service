@@ -5,18 +5,20 @@ After=network-online.target
 Wants=network-online.target
 
 # Usage:
-#   systemctl enable --now beacon-worker@sendgrid.service
-#   systemctl enable --now beacon-worker@mailgun.service
+#   systemctl enable --now beacon-worker@email-sendgrid.service
+#   systemctl enable --now beacon-worker@email-mailgun.service
 #
-# %i expands to the instance name (the part after @), which is used as the
-# PROVIDER_NAME so each worker instance routes through the correct SMTP config.
+# %i expands to the instance name (the part after @), formatted as
+# "<channel>-<provider>" (e.g. "email-sendgrid"). It is passed through as
+# WORKER_SPEC and parsed into channel + provider so each worker instance
+# routes through the correct SMTP config.
 
 [Service]
 Type=simple
 # Shared Temporal / Infisical configuration for all worker instances.
 EnvironmentFile=/etc/beacon/worker.env
-# Override PROVIDER_NAME with the instance name (%i).
-Environment=PROVIDER_NAME=%i
+# Override WORKER_SPEC with the instance name (%i).
+Environment=WORKER_SPEC=%i
 ExecStart=/usr/local/bin/email_worker
 Restart=always
 RestartSec=5s

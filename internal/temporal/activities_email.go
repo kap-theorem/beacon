@@ -1,19 +1,21 @@
 package temporal
 
 import (
-	"beacon/internal/notifier"
 	"context"
+	"fmt"
 
 	"beacon/internal/models"
+	"beacon/internal/notifier"
 )
 
 type EmailActivities struct {
-	GetService func() notifier.Notifier[models.EmailMessage]
+	GetSender func() notifier.Sender
 }
 
-func (a *EmailActivities) SendEmailActivity(ctx context.Context, msg *models.EmailMessage) error {
-	return a.GetService().Send(ctx, &notifier.Message[models.EmailMessage]{
-		Type: notifier.EmailNotifier,
-		Data: *msg,
-	})
+func (a *EmailActivities) SendEmailActivity(ctx context.Context, n *models.Notification) error {
+	n.Normalize()
+	if n.Email == nil {
+		return fmt.Errorf("notification has no email payload")
+	}
+	return a.GetSender().Send(ctx, n)
 }

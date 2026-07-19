@@ -1,6 +1,7 @@
 package api
 
 import (
+	"beacon/internal/auth"
 	"beacon/internal/config"
 	"beacon/internal/notifier"
 	"encoding/json"
@@ -30,8 +31,13 @@ const smtpSecretJSON = `{
 func newInfisicalServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Return a single secret whose value is the SMTP config JSON.
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("secretPath") != "/beacon/providers/email" {
+			// Tenants/services aren't under test here; keep the bundle valid but empty.
+			json.NewEncoder(w).Encode(map[string]any{"secrets": []any{}})
+			return
+		}
+		// Return a single secret whose value is the SMTP config JSON.
 		resp := map[string]any{
 			"secrets": []map[string]any{
 				{
@@ -45,6 +51,26 @@ func newInfisicalServer(t *testing.T) *httptest.Server {
 	}))
 }
 
+// minimalBundle returns a ConfigBundle with one default SMTP provider.
+func minimalBundle() *config.ConfigBundle {
+	return &config.ConfigBundle{
+		Revision: 1,
+		SMTP: map[string]*config.SMTPClientConfig{
+			"testprovider": {
+				Name:        "testprovider",
+				Provider:    "smtp",
+				Host:        "smtp.example.com",
+				Port:        587,
+				Username:    "user",
+				Password:    "pass",
+				AuthType:    config.AuthPlain,
+				FromAddress: "noreply@example.com",
+				IsDefault:   true,
+			},
+		},
+	}
+}
+
 // newAdminHandlerWithLiveCS builds an AdminHandler backed by a real ConfigService that
 // points at the provided httptest server (simulating Infisical) and has an initial
 // config bundle already stored so GetConfig() works after a successful RefreshConfig.
@@ -55,14 +81,14 @@ func newAdminHandlerWithLiveCS(t *testing.T, infisicalURL string) *AdminHandler 
 	// and sends apiKey directly in the Authorization header.
 	cs := config.NewConfigService(infisicalURL, "proj-1", "test", "test-api-key", "", "", discardLogger())
 
-	// Pre-populate with a bundle so the registry can be built.
+	// Pre-populate with a bundle so the registries can be built.
 	initialBundle := minimalBundle()
 	cs.Store(initialBundle)
 
-	registry, err := notifier.NewEmailClientRegistry(initialBundle)
-	require.NoError(t, err)
+	providers := notifier.NewProviderRegistry(initialBundle)
+	authReg := auth.NewRegistry(initialBundle)
 
-	return NewAdminHandler(cs, registry, discardLogger())
+	return NewAdminHandler(cs, providers, authReg, discardLogger())
 }
 
 // newDevModeAdminHandler creates an AdminHandler whose ConfigService is in DEV_MODE.
@@ -211,29 +237,4 @@ func TestAdmin_HandleConfigRefresh_DevModeSkip(t *testing.T) {
 	// positive, so the team is aware.
 	t.Skip("ErrDevModeSkip branch requires authMethod='dev' which has no public constructor path; " +
 		"production code should expose ConfigServicer interface to enable full coverage")
-}
-
-// TestAdmin_HandleConfigRefresh_RegistryReloadError verifies the 500 path when
-// registry.Reload fails after a successful ConfigService refresh.
-// This is achieved by using a config where the refreshed bundle has no SMTP providers
-// (which makes Reload return an error).
-func TestAdmin_HandleConfigRefresh_RegistryReloadError(t *testing.T) {
-	t.Setenv("ADMIN_TOKEN", "secret")
-
-	// Server returns an empty secrets list — loadFromInfisical succeeds but with
-	// zero SMTP providers, causing registry.Reload to fail.
-	emptySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"secrets": []any{}})
-	}))
-	defer emptySrv.Close()
-
-	h := newAdminHandlerWithLiveCS(t, emptySrv.URL)
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/config/refresh", nil)
-	req.Header.Set("Authorization", "Bearer secret")
-	w := httptest.NewRecorder()
-	h.HandleConfigRefresh(w, req)
-
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }

@@ -3,9 +3,11 @@ package testsupport
 
 import (
 	"bufio"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -19,9 +21,13 @@ type CapturedMessage struct {
 // MockSMTPServer is a minimal in-process SMTP server for tests. It accepts the
 // subset of SMTP that gopkg.in/mail.v2 uses with no auth and no STARTTLS.
 type MockSMTPServer struct {
-	ln       net.Listener
-	mu       sync.Mutex
-	messages []CapturedMessage
+	ln          net.Listener
+	mu          sync.Mutex
+	messages    []CapturedMessage
+	connections atomic.Int64
+	active      map[net.Conn]struct{}
+	rejectCode  int
+	rejectMsg   string
 }
 
 // NewMockSMTPServer starts the server on a random localhost port and registers
@@ -32,7 +38,7 @@ func NewMockSMTPServer(t *testing.T) *MockSMTPServer {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	s := &MockSMTPServer{ln: ln}
+	s := &MockSMTPServer{ln: ln, active: make(map[net.Conn]struct{})}
 	go s.serve()
 	t.Cleanup(func() { _ = ln.Close() })
 	return s
@@ -41,6 +47,59 @@ func NewMockSMTPServer(t *testing.T) *MockSMTPServer {
 func (s *MockSMTPServer) Host() string { return "127.0.0.1" }
 
 func (s *MockSMTPServer) Port() int { return s.ln.Addr().(*net.TCPAddr).Port }
+
+// Connections returns the number of TCP connections accepted so far.
+func (s *MockSMTPServer) Connections() int { return int(s.connections.Load()) }
+
+// CloseActiveConns forcibly closes every connection currently open on the
+// server side, simulating a server-side drop (idle timeout, restart, network
+// blip) so callers can test client-side recovery from a live connection that
+// suddenly goes bad mid-session.
+//
+// SetLinger(0) forces a hard RST on close instead of a graceful FIN: a plain
+// close would often surface to the client as a clean io.EOF on its next
+// read, which gomail's own Dialer (RetryFailure defaults true) already
+// retries internally for the MAIL FROM step alone — masking whatever the
+// caller's own reconnect logic does. An RST surfaces as ECONNRESET, which
+// gomail's built-in retry does not cover, so this reliably exercises the
+// caller's own recovery path instead of gomail's.
+func (s *MockSMTPServer) CloseActiveConns() {
+	s.mu.Lock()
+	conns := make([]net.Conn, 0, len(s.active))
+	for c := range s.active {
+		conns = append(conns, c)
+	}
+	s.mu.Unlock()
+
+	for _, c := range conns {
+		if tc, ok := c.(*net.TCPConn); ok {
+			_ = tc.SetLinger(0)
+		}
+		_ = c.Close()
+	}
+}
+
+// Stop closes the server's listening socket so no further connections can be
+// accepted. Already-active connections are left open; pair with
+// CloseActiveConns to also drop those. Safe to call more than once (a second
+// close is a no-op error that Stop discards).
+func (s *MockSMTPServer) Stop() {
+	_ = s.ln.Close()
+}
+
+// RejectNextMail arms the server to reject the next MAIL FROM command it
+// receives, on any connection, with the given SMTP status code and message
+// instead of the usual "250 OK". This simulates a protocol-level rejection
+// (bad sender, policy reject, mailbox unavailable, etc.) so callers can test
+// client-side handling of a non-transport SMTP failure that must not be
+// retried. The arming is consumed by the next MAIL FROM it sees and cleared
+// immediately after.
+func (s *MockSMTPServer) RejectNextMail(code int, msg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rejectCode = code
+	s.rejectMsg = msg
+}
 
 // Messages returns a copy of all captured messages.
 func (s *MockSMTPServer) Messages() []CapturedMessage {
@@ -57,12 +116,22 @@ func (s *MockSMTPServer) serve() {
 		if err != nil {
 			return // listener closed
 		}
+		s.connections.Add(1)
 		go s.handle(conn)
 	}
 }
 
 func (s *MockSMTPServer) handle(conn net.Conn) {
-	defer conn.Close()
+	s.mu.Lock()
+	s.active[conn] = struct{}{}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.active, conn)
+		s.mu.Unlock()
+		_ = conn.Close()
+	}()
+
 	r := bufio.NewReader(conn)
 	w := bufio.NewWriter(conn)
 	write := func(line string) {
@@ -84,8 +153,16 @@ func (s *MockSMTPServer) handle(conn net.Conn) {
 			write("250-mock.local")
 			write("250 OK")
 		case strings.HasPrefix(cmd, "MAIL FROM"):
-			msg.From = extractAddr(line)
-			write("250 OK")
+			s.mu.Lock()
+			rejectCode, rejectMsg := s.rejectCode, s.rejectMsg
+			s.rejectCode, s.rejectMsg = 0, ""
+			s.mu.Unlock()
+			if rejectCode != 0 {
+				write(fmt.Sprintf("%d %s", rejectCode, rejectMsg))
+			} else {
+				msg.From = extractAddr(line)
+				write("250 OK")
+			}
 		case strings.HasPrefix(cmd, "RCPT TO"):
 			msg.To = append(msg.To, extractAddr(line))
 			write("250 OK")

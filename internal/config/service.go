@@ -185,20 +185,61 @@ func (cs *ConfigService) LoadWithRetry(ctx context.Context) (*ConfigBundle, erro
 func (cs *ConfigService) loadFromInfisical(ctx context.Context) (*ConfigBundle, error) {
 	bundle := &ConfigBundle{
 		SMTP:      make(map[string]*SMTPClientConfig),
+		Tenants:   make(map[string]*TenantConfig),
+		Services:  make(map[string]*ServiceConfig),
 		Timestamp: time.Now().UTC(),
 	}
 
-	smtpConfigs, err := cs.fetchConfigs(ctx, "/beacon/smtp")
+	smtpConfigs, err := cs.fetchConfigs(ctx, "/beacon/providers/email")
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch SMTP configs: %w", err)
+		return nil, fmt.Errorf("failed to fetch email provider configs: %w", err)
 	}
-
 	for path, rawJSON := range smtpConfigs {
 		cfg, valErr := ValidateConfig(rawJSON)
 		if valErr != nil {
 			return nil, fmt.Errorf("validation error at %s: %w", path, valErr)
 		}
+		if _, dup := bundle.SMTP[cfg.Name]; dup {
+			return nil, fmt.Errorf("duplicate SMTP provider %q declared by secret %s", cfg.Name, path)
+		}
 		bundle.SMTP[cfg.Name] = cfg
+	}
+
+	tenantConfigs, err := cs.fetchConfigs(ctx, "/beacon/tenants")
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch tenant configs: %w", err)
+	}
+	for path, rawJSON := range tenantConfigs {
+		t, valErr := ValidateTenantConfig(rawJSON)
+		if valErr != nil {
+			return nil, fmt.Errorf("validation error at %s: %w", path, valErr)
+		}
+		if _, dup := bundle.Tenants[t.Tenant]; dup {
+			return nil, fmt.Errorf("duplicate tenant %q declared by secret %s", t.Tenant, path)
+		}
+		bundle.Tenants[t.Tenant] = t
+	}
+
+	serviceConfigs, err := cs.fetchConfigs(ctx, "/beacon/services")
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch service configs: %w", err)
+	}
+	for path, rawJSON := range serviceConfigs {
+		s, valErr := ValidateServiceConfig(rawJSON)
+		if valErr != nil {
+			return nil, fmt.Errorf("validation error at %s: %w", path, valErr)
+		}
+		if _, dup := bundle.Services[s.Service]; dup {
+			return nil, fmt.Errorf("duplicate service %q declared by secret %s", s.Service, path)
+		}
+		bundle.Services[s.Service] = s
+	}
+
+	if err := ValidateBundleRefs(bundle, cs.logger); err != nil {
+		return nil, err
+	}
+	if len(bundle.Services) == 0 {
+		cs.logger.Warn("no service registrations loaded; all /v1 requests will be rejected")
 	}
 
 	cs.mu.Lock()
@@ -294,11 +335,15 @@ func (cs *ConfigService) GetConfig() *ConfigBundle {
 
 	bundle := &ConfigBundle{
 		SMTP:      make(map[string]*SMTPClientConfig),
+		Tenants:   make(map[string]*TenantConfig),
+		Services:  make(map[string]*ServiceConfig),
 		Revision:  cs.current.Revision,
 		Timestamp: cs.current.Timestamp,
 	}
 
 	maps.Copy(bundle.SMTP, cs.current.SMTP)
+	maps.Copy(bundle.Tenants, cs.current.Tenants)
+	maps.Copy(bundle.Services, cs.current.Services)
 
 	return bundle
 }

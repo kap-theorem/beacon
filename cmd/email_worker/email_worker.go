@@ -2,8 +2,8 @@ package main
 
 import (
 	"beacon/internal/app"
+	"beacon/internal/channel"
 	confpkg "beacon/internal/config"
-	"beacon/internal/models"
 	"beacon/internal/notifier"
 	"beacon/internal/temporal"
 	"beacon/utils"
@@ -36,25 +36,45 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Determine which provider this worker instance serves.
-	// Set PROVIDER_NAME to the key in the SMTP config map (e.g. "mailgun-payments").
-	// If unset, the default provider (is_default: true) is used; if only one provider
-	// exists it is automatically the default.
+	// Determine which channel + provider this worker instance serves.
+	// Preferred: set WORKER_SPEC to "<channel>-<provider>" (e.g. "email-sendgrid"),
+	// as used by the systemd template unit's %i instance name. Alternatively set
+	// CHANNEL and PROVIDER_NAME separately. If PROVIDER_NAME is unset, the default
+	// provider (is_default: true) is used; if only one provider exists it is
+	// automatically the default.
+	channelName := os.Getenv("CHANNEL")
+	if channelName == "" {
+		channelName = "email"
+	}
+	providerName := os.Getenv("PROVIDER_NAME")
+	if spec := os.Getenv("WORKER_SPEC"); spec != "" {
+		var specErr error
+		channelName, providerName, specErr = app.ParseWorkerSpec(spec)
+		if specErr != nil {
+			logger.Error("invalid WORKER_SPEC", slog.Any("error", specErr))
+			os.Exit(1)
+		}
+	}
+	if channelName != "email" {
+		logger.Error("this worker binary only implements the email channel", slog.String("channel", channelName))
+		os.Exit(1)
+	}
+
 	bundle := confpkg.GetConfigService().GetConfig()
-	providerName, smtpCfg, err := app.ResolveWorkerProvider(bundle, os.Getenv("PROVIDER_NAME"))
+	providerName, smtpCfg, err := app.ResolveWorkerProvider(bundle, providerName)
 	if err != nil {
 		logger.Error("resolve worker provider", slog.Any("error", err))
 		os.Exit(1)
 	}
 
-	taskQueue := notifier.TaskQueueFor(providerName)
+	taskQueue := channel.TaskQueue(channelName, providerName)
 
-	// EmailService is hot-swapped by the ConfigWatcher via an atomic pointer.
-	var emailSvc atomic.Pointer[notifier.EmailService]
-	emailSvc.Store(notifier.NewEmailService(smtpCfg.Host, smtpCfg.Port, smtpCfg.Username, smtpCfg.Password, smtpCfg.FromAddress, smtpCfg.FromName))
+	// EmailSender is hot-swapped by the ConfigWatcher via an atomic pointer.
+	var emailSender atomic.Pointer[notifier.EmailSender]
+	emailSender.Store(notifier.NewEmailSender(smtpCfg))
 
-	getEmailService := func() notifier.Notifier[models.EmailMessage] {
-		return emailSvc.Load()
+	getSender := func() notifier.Sender {
+		return emailSender.Load()
 	}
 
 	c, err := utils.NewTemporalClient()
@@ -78,12 +98,16 @@ func main() {
 			logger.Error("config reload: provider not found", slog.String("provider", providerName), slog.Any("error", cfgErr))
 			return
 		}
-		emailSvc.Store(notifier.NewEmailService(newCfg.Host, newCfg.Port, newCfg.Username, newCfg.Password, newCfg.FromAddress, newCfg.FromName))
-		logger.Info("email service reloaded", slog.String("provider", providerName))
+		old := emailSender.Load()
+		emailSender.Store(notifier.NewEmailSender(newCfg))
+		if old != nil {
+			old.Close()
+		}
+		logger.Info("email sender reloaded", slog.String("provider", providerName))
 	}, logger)
 	go watcher.Start(watchCtx)
 
-	emailActivities := &temporal.EmailActivities{GetService: getEmailService}
+	emailActivities := &temporal.EmailActivities{GetSender: getSender}
 
 	w.RegisterWorkflow(temporal.SendEmailWorkflow)
 	w.RegisterActivity(emailActivities.SendEmailActivity)

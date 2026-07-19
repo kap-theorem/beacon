@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -56,6 +57,44 @@ func authResponse(token string, expiresIn int64) string {
 		"expiresIn":   expiresIn,
 	})
 	return string(b)
+}
+
+// infisicalMultiPathResponse returns the JSON body Infisical should return for the
+// given secretPath, now that loadFromInfisical fetches three separate paths
+// (/beacon/providers/email, /beacon/tenants, /beacon/services) instead of one.
+// providerName is served at /beacon/providers/email and referenced by the
+// synthesized /beacon/services fixture so ValidateBundleRefs has no unknown-provider
+// warning to reconcile.
+func infisicalMultiPathResponse(secretPath, providerName string) string {
+	switch secretPath {
+	case "/beacon/providers/email":
+		return infisicalSecretsResponse(map[string]string{
+			providerName: validProviderJSON(providerName),
+		})
+	case "/beacon/tenants":
+		return infisicalSecretsResponse(map[string]string{
+			"payments": `{"tenant":"payments","name":"Payments"}`,
+		})
+	case "/beacon/services":
+		return infisicalSecretsResponse(map[string]string{
+			"billing-api": fmt.Sprintf(`{
+  "service": "billing-api",
+  "tenant": "payments",
+  "enabled": true,
+  "keys": [{"id": "k1", "sha256": "%s", "state": "active"}],
+  "channels": {
+    "email": {
+      "providers": ["%s"],
+      "default_provider": "%s",
+      "from": {"address": "billing@corp.com", "name": "Billing"},
+      "rate": {"rpm": 60, "daily": 5000}
+    }
+  }
+}`, testHash, providerName, providerName),
+		})
+	default:
+		return `{"secrets": []}`
+	}
 }
 
 // --- getAccessToken tests ---
@@ -278,9 +317,7 @@ func TestFetchConfigs_408_Transient(t *testing.T) {
 func TestLoadFromInfisical_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, infisicalSecretsResponse(map[string]string{
-			"p1": validProviderJSON("p1"),
-		}))
+		fmt.Fprint(w, infisicalMultiPathResponse(r.URL.Query().Get("secretPath"), "p1"))
 	}))
 	defer srv.Close()
 
@@ -317,9 +354,7 @@ func TestLoadFromInfisical_ValidationError(t *testing.T) {
 func TestLoadWithRetry_SuccessFirstTry(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, infisicalSecretsResponse(map[string]string{
-			"p1": validProviderJSON("p1"),
-		}))
+		fmt.Fprint(w, infisicalMultiPathResponse(r.URL.Query().Get("secretPath"), "p1"))
 	}))
 	defer srv.Close()
 
@@ -386,9 +421,7 @@ func TestLoadWithRetry_TransientRetry(t *testing.T) {
 		}
 		// Secrets endpoint: success after auth
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, infisicalSecretsResponse(map[string]string{
-			"p1": validProviderJSON("p1"),
-		}))
+		fmt.Fprint(w, infisicalMultiPathResponse(r.URL.Query().Get("secretPath"), "p1"))
 	}))
 	defer srv.Close()
 
@@ -489,6 +522,12 @@ func TestStore_GetConfig_DeepCopy(t *testing.T) {
 				Port:     587,
 			},
 		},
+		Tenants: map[string]*TenantConfig{
+			"payments": {Tenant: "payments", Name: "Payments"},
+		},
+		Services: map[string]*ServiceConfig{
+			"billing-api": {Service: "billing-api", Tenant: "payments"},
+		},
 		Revision:  1,
 		Timestamp: time.Now().UTC(),
 	}
@@ -505,17 +544,31 @@ func TestStore_GetConfig_DeepCopy(t *testing.T) {
 	if _, ok := got.SMTP["p1"]; !ok {
 		t.Errorf("expected 'p1' in SMTP map")
 	}
+	if _, ok := got.Tenants["payments"]; !ok {
+		t.Errorf("expected 'payments' in Tenants map")
+	}
+	if _, ok := got.Services["billing-api"]; !ok {
+		t.Errorf("expected 'billing-api' in Services map")
+	}
 
-	// Verify the snapshot is a separate map from the current stored map.
-	// GetConfig returns a new map (shallow copy), so the returned map is not
-	// the same reference as cs.current.SMTP. Mutating the RETURNED map should
-	// not affect subsequent GetConfig calls.
+	// Verify the snapshots are separate maps from the current stored maps.
+	// GetConfig returns new maps (shallow copies), so the returned maps are not
+	// the same reference as cs.current.SMTP/Tenants/Services. Mutating the
+	// RETURNED maps should not affect subsequent GetConfig calls.
 	got.SMTP["p2"] = &SMTPClientConfig{Name: "p2"}
+	got.Tenants["ghost"] = &TenantConfig{Tenant: "ghost"}
+	got.Services["ghost-svc"] = &ServiceConfig{Service: "ghost-svc"}
 
-	// Verify the second call doesn't include the mutation we made to the returned copy
+	// Verify the second call doesn't include the mutations made to the returned copies
 	got2 := cs.GetConfig()
 	if _, ok := got2.SMTP["p2"]; ok {
 		t.Error("mutation of returned bundle SMTP map should not affect subsequent GetConfig calls")
+	}
+	if _, ok := got2.Tenants["ghost"]; ok {
+		t.Error("mutation of returned bundle Tenants map should not affect subsequent GetConfig calls")
+	}
+	if _, ok := got2.Services["ghost-svc"]; ok {
+		t.Error("mutation of returned bundle Services map should not affect subsequent GetConfig calls")
 	}
 }
 
@@ -578,9 +631,7 @@ func TestGetClientConfig_NotInitialized(t *testing.T) {
 func TestRefreshConfig_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, infisicalSecretsResponse(map[string]string{
-			"p1": validProviderJSON("p1"),
-		}))
+		fmt.Fprint(w, infisicalMultiPathResponse(r.URL.Query().Get("secretPath"), "p1"))
 	}))
 	defer srv.Close()
 
@@ -702,6 +753,208 @@ func TestFetchConfigs_ClientSecretAuth(t *testing.T) {
 	}
 	if _, ok := configs["p1"]; !ok {
 		t.Errorf("expected 'p1' in configs")
+	}
+}
+
+// --- Fail-closed coverage: malformed tenant/service docs and refresh revert ---
+
+// TestLoadFromInfisical_MalformedTenantDoc_Rejected verifies that a /beacon/tenants
+// secret missing the required "tenant" field causes the whole bundle to be rejected
+// (fail closed), both via the direct loadFromInfisical call and through LoadWithRetry
+// (which must not endlessly retry a non-transient validation error).
+func TestLoadFromInfisical_MalformedTenantDoc_Rejected(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("secretPath") {
+		case "/beacon/providers/email":
+			fmt.Fprint(w, infisicalSecretsResponse(map[string]string{
+				"p1": validProviderJSON("p1"),
+			}))
+		case "/beacon/tenants":
+			// Missing required "tenant" field.
+			fmt.Fprint(w, infisicalSecretsResponse(map[string]string{
+				"bad-tenant": `{"name":"no id"}`,
+			}))
+		default:
+			fmt.Fprint(w, `{"secrets": []}`)
+		}
+	})
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	cs := NewConfigService(srv.URL, "proj", "prod", "key", "", "", testLogger())
+	_, err := cs.loadFromInfisical(context.Background())
+	if err == nil {
+		t.Fatal("expected error for malformed tenant doc, got nil")
+	}
+	if !strings.Contains(err.Error(), "tenant") {
+		t.Errorf("expected error to mention tenant validation, got: %v", err)
+	}
+
+	// Also verify the bundle is rejected when going through the full retry path;
+	// a validation error is non-transient so LoadWithRetry must fail fast.
+	cs2 := NewConfigService(srv.URL, "proj", "prod", "key", "", "", testLogger())
+	if _, err := cs2.LoadWithRetry(context.Background()); err == nil {
+		t.Fatal("expected LoadWithRetry to reject bundle with malformed tenant doc")
+	}
+}
+
+// TestLoadFromInfisical_ServiceUnknownTenant_Rejected verifies that a /beacon/services
+// doc referencing a tenant that doesn't exist in /beacon/tenants is rejected by
+// ValidateBundleRefs, and that the resulting error names the offending service.
+func TestLoadFromInfisical_ServiceUnknownTenant_Rejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("secretPath") {
+		case "/beacon/providers/email":
+			fmt.Fprint(w, infisicalSecretsResponse(map[string]string{
+				"p1": validProviderJSON("p1"),
+			}))
+		case "/beacon/services":
+			fmt.Fprint(w, infisicalSecretsResponse(map[string]string{
+				"billing-api": fmt.Sprintf(`{
+  "service": "billing-api",
+  "tenant": "ghost-tenant",
+  "enabled": true,
+  "keys": [{"id": "k1", "sha256": "%s", "state": "active"}],
+  "channels": {
+    "email": {
+      "providers": ["p1"],
+      "default_provider": "p1",
+      "rate": {"rpm": 60, "daily": 5000}
+    }
+  }
+}`, testHash),
+			}))
+		default:
+			// No /beacon/tenants docs at all → "ghost-tenant" is unknown.
+			fmt.Fprint(w, `{"secrets": []}`)
+		}
+	}))
+	defer srv.Close()
+
+	cs := NewConfigService(srv.URL, "proj", "prod", "key", "", "", testLogger())
+	_, err := cs.loadFromInfisical(context.Background())
+	if err == nil {
+		t.Fatal("expected ValidateBundleRefs error for unknown tenant reference, got nil")
+	}
+	if !strings.Contains(err.Error(), "billing-api") {
+		t.Errorf("expected error to mention service name 'billing-api', got: %v", err)
+	}
+}
+
+// TestLoadFromInfisical_DuplicateService_Rejected verifies that two distinct
+// /beacon/services secrets both declaring the same "service" name are rejected,
+// rather than silently last-write-wins overwriting one another in bundle.Services
+// depending on random map iteration order.
+func TestLoadFromInfisical_DuplicateService_Rejected(t *testing.T) {
+	dupServiceJSON := fmt.Sprintf(`{
+  "service": "billing-api",
+  "tenant": "payments",
+  "enabled": true,
+  "keys": [{"id": "k1", "sha256": "%s", "state": "active"}],
+  "channels": {
+    "email": {
+      "providers": ["p1"],
+      "default_provider": "p1",
+      "rate": {"rpm": 60, "daily": 5000}
+    }
+  }
+}`, testHash)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("secretPath") {
+		case "/beacon/providers/email":
+			fmt.Fprint(w, infisicalSecretsResponse(map[string]string{
+				"p1": validProviderJSON("p1"),
+			}))
+		case "/beacon/tenants":
+			fmt.Fprint(w, infisicalSecretsResponse(map[string]string{
+				"payments": `{"tenant":"payments","name":"Payments"}`,
+			}))
+		case "/beacon/services":
+			// Two distinct secrets (different secretKey) both declaring the same
+			// "service": "billing-api" -- must be rejected outright.
+			fmt.Fprint(w, infisicalSecretsResponse(map[string]string{
+				"SERVICE_BILLING_A": dupServiceJSON,
+				"SERVICE_BILLING_B": dupServiceJSON,
+			}))
+		default:
+			fmt.Fprint(w, `{"secrets": []}`)
+		}
+	}))
+	defer srv.Close()
+
+	cs := NewConfigService(srv.URL, "proj", "prod", "key", "", "", testLogger())
+	_, err := cs.loadFromInfisical(context.Background())
+	if err == nil {
+		t.Fatal("expected error for duplicate service declaration, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate service") {
+		t.Errorf("expected error to mention 'duplicate service', got: %v", err)
+	}
+}
+
+// TestRefreshConfig_RevertsOnFailure_NewPaths exercises RefreshConfig's revert-to-previous
+// behaviour through the real three-path loading flow: two successful loads (so a real
+// "previous" bundle exists), then the mock starts serving a malformed /beacon/tenants doc.
+// RefreshConfig must return an error and GetConfig must still reflect the last-known-good
+// bundle (by revision and by content), not the rejected load.
+func TestRefreshConfig_RevertsOnFailure_NewPaths(t *testing.T) {
+	var serveBad int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Query().Get("secretPath")
+		if atomic.LoadInt32(&serveBad) == 1 && path == "/beacon/tenants" {
+			fmt.Fprint(w, infisicalSecretsResponse(map[string]string{
+				"bad-tenant": `{"name":"no id"}`,
+			}))
+			return
+		}
+		fmt.Fprint(w, infisicalMultiPathResponse(path, "p1"))
+	}))
+	defer srv.Close()
+
+	cs := NewConfigService(srv.URL, "proj", "prod", "key", "", "", testLogger())
+
+	// First successful load: current is set, previous is still nil.
+	if err := cs.RefreshConfig(context.Background()); err != nil {
+		t.Fatalf("first RefreshConfig error: %v", err)
+	}
+	firstRevision := cs.GetConfig().Revision
+
+	// Second successful load: current shifts to previous, giving the failure
+	// path below an actual bundle to revert to.
+	if err := cs.RefreshConfig(context.Background()); err != nil {
+		t.Fatalf("second RefreshConfig error: %v", err)
+	}
+	secondRevision := cs.GetConfig().Revision
+	if secondRevision == firstRevision {
+		t.Fatalf("expected revision to bump on second successful load, got %d both times", secondRevision)
+	}
+
+	// Now the mock starts serving a malformed /beacon/tenants doc.
+	atomic.StoreInt32(&serveBad, 1)
+
+	if err := cs.RefreshConfig(context.Background()); err == nil {
+		t.Fatal("expected RefreshConfig to fail on malformed tenant doc")
+	}
+
+	// GetConfig should revert to the previous (first) good bundle, not the failed load.
+	after := cs.GetConfig()
+	if after == nil {
+		t.Fatal("expected non-nil bundle after failed refresh")
+	}
+	if after.Revision != firstRevision {
+		t.Errorf("expected revert to previous revision %d, got %d", firstRevision, after.Revision)
+	}
+	if _, ok := after.SMTP["p1"]; !ok {
+		t.Errorf("expected previous provider 'p1' to survive failed refresh, got: %v", after.SMTP)
+	}
+	if _, ok := after.Services["billing-api"]; !ok {
+		t.Errorf("expected previous service 'billing-api' to survive failed refresh, got: %v", after.Services)
 	}
 }
 

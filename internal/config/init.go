@@ -2,6 +2,8 @@ package config
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -111,8 +113,33 @@ func buildDevBundle() (*ConfigBundle, error) {
 		FromName:    firstNonEmpty(os.Getenv("DEV_SMTP_FROM_NAME"), "Beacon"),
 	}
 
+	devKey := os.Getenv("DEV_API_KEY")
+	if devKey == "" {
+		return nil, fmt.Errorf("DEV_API_KEY must be set when DEV_MODE=true")
+	}
+	sum := sha256.Sum256([]byte(devKey))
+
+	tenants := map[string]*TenantConfig{"dev": {Tenant: "dev", Name: "Development"}}
+	services := map[string]*ServiceConfig{
+		"dev": {
+			Service: "dev",
+			Tenant:  "dev",
+			Enabled: true,
+			Keys:    []KeyEntry{{ID: "k1", SHA256: hex.EncodeToString(sum[:]), State: "active"}},
+			Channels: map[string]*ChannelPolicy{
+				"email": {
+					Providers:       []string{name},
+					DefaultProvider: name,
+					Rate:            RateConfig{RPM: 1000, Daily: 100000},
+				},
+			},
+		},
+	}
+
 	return &ConfigBundle{
 		SMTP:      map[string]*SMTPClientConfig{name: cfg},
+		Tenants:   tenants,
+		Services:  services,
 		Revision:  1,
 		Timestamp: time.Now().UTC(),
 	}, nil

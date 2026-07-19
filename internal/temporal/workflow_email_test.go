@@ -10,16 +10,19 @@ import (
 )
 
 // TestSendEmailWorkflow_Success verifies that SendEmailWorkflow completes
-// without error when the underlying notifier succeeds.
+// without error when the underlying sender succeeds.
 func TestSendEmailWorkflow_Success(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
 
-	fn := &fakeNotifier{}
-	a := &EmailActivities{GetService: func() notifier.Notifier[models.EmailMessage] { return fn }}
+	cs := &captureSender{}
+	a := &EmailActivities{GetSender: func() notifier.Sender { return cs }}
 	env.RegisterActivity(a.SendEmailActivity)
 
-	env.ExecuteWorkflow(SendEmailWorkflow, &models.EmailMessage{To: "a@b.com", Subject: "s"})
+	env.ExecuteWorkflow(SendEmailWorkflow, &models.Notification{
+		Channel: "email",
+		Email:   &models.EmailPayload{To: "a@b.com", Subject: "s"},
+	})
 
 	if !env.IsWorkflowCompleted() {
 		t.Fatal("workflow did not complete")
@@ -36,11 +39,14 @@ func TestSendEmailWorkflow_RetriesThenFails(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
 
-	fn := &fakeNotifier{err: errors.New("smtp down")}
-	a := &EmailActivities{GetService: func() notifier.Notifier[models.EmailMessage] { return fn }}
+	cs := &captureSender{err: errors.New("smtp down")}
+	a := &EmailActivities{GetSender: func() notifier.Sender { return cs }}
 	env.RegisterActivity(a.SendEmailActivity)
 
-	env.ExecuteWorkflow(SendEmailWorkflow, &models.EmailMessage{To: "a@b.com", Subject: "s"})
+	env.ExecuteWorkflow(SendEmailWorkflow, &models.Notification{
+		Channel: "email",
+		Email:   &models.EmailPayload{To: "a@b.com", Subject: "s"},
+	})
 
 	if !env.IsWorkflowCompleted() {
 		t.Fatal("workflow did not complete")

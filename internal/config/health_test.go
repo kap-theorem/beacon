@@ -1,9 +1,12 @@
 package config
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // --- HandleLive tests ---
@@ -59,51 +62,7 @@ func TestHandleLive_PUT_405(t *testing.T) {
 	}
 }
 
-// --- HandleReady tests ---
-
-func TestHandleReady_GET_NotReady_503(t *testing.T) {
-	hc := NewHealthChecker()
-	// Default ready=false
-	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
-	w := httptest.NewRecorder()
-	hc.HandleReady(w, req)
-
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("expected 503, got %d", w.Code)
-	}
-	if body := w.Body.String(); body != "not ready" {
-		t.Errorf("expected body 'not ready', got %q", body)
-	}
-}
-
-func TestHandleReady_GET_Ready_200(t *testing.T) {
-	hc := NewHealthChecker()
-	hc.SetReady(true)
-
-	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
-	w := httptest.NewRecorder()
-	hc.HandleReady(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
-	}
-	if body := w.Body.String(); body != "ready" {
-		t.Errorf("expected body 'ready', got %q", body)
-	}
-}
-
-func TestHandleReady_HEAD_Ready_200(t *testing.T) {
-	hc := NewHealthChecker()
-	hc.SetReady(true)
-
-	req := httptest.NewRequest(http.MethodHead, "/ready", nil)
-	w := httptest.NewRecorder()
-	hc.HandleReady(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200 for HEAD, got %d", w.Code)
-	}
-}
+// --- HandleReady method tests ---
 
 func TestHandleReady_POST_405(t *testing.T) {
 	hc := NewHealthChecker()
@@ -131,34 +90,71 @@ func TestHandleReady_DELETE_405(t *testing.T) {
 	}
 }
 
-// --- SetReady toggle ---
+// --- HandleReady readiness-check tests ---
 
-func TestSetReady_Toggle(t *testing.T) {
-	hc := NewHealthChecker()
+func TestHandleReady_AllChecksPass(t *testing.T) {
+	hc := NewHealthChecker(ReadinessCheck{Name: "ok", Fn: func(ctx context.Context) error { return nil }})
+	rec := httptest.NewRecorder()
+	hc.HandleReady(rec, httptest.NewRequest("GET", "/healthz/ready", nil))
+	if rec.Code != 200 {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+}
 
-	// Initially not ready
-	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
-	w := httptest.NewRecorder()
-	hc.HandleReady(w, req)
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("expected 503 initially, got %d", w.Code)
+func TestHandleReady_FailingCheck503(t *testing.T) {
+	hc := NewHealthChecker(ReadinessCheck{Name: "temporal", Fn: func(ctx context.Context) error {
+		return fmt.Errorf("unreachable")
+	}})
+	rec := httptest.NewRecorder()
+	hc.HandleReady(rec, httptest.NewRequest("GET", "/healthz/ready", nil))
+	if rec.Code != 503 {
+		t.Fatalf("want 503, got %d", rec.Code)
+	}
+}
+
+func TestHandleReady_ResultCached(t *testing.T) {
+	calls := 0
+	hc := NewHealthChecker(ReadinessCheck{Name: "count", Fn: func(ctx context.Context) error {
+		calls++
+		return nil
+	}})
+	hc.ttl = time.Hour
+	for i := 0; i < 3; i++ {
+		rec := httptest.NewRecorder()
+		hc.HandleReady(rec, httptest.NewRequest("GET", "/healthz/ready", nil))
+	}
+	if calls != 1 {
+		t.Fatalf("want 1 evaluation (cached), got %d", calls)
+	}
+}
+
+func TestHandleReady_CallerCancellationDoesNotPoisonCache(t *testing.T) {
+	hc := NewHealthChecker(ReadinessCheck{Name: "slow", Fn: func(ctx context.Context) error {
+		select {
+		case <-time.After(100 * time.Millisecond):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}})
+
+	// First prober arrives with an already-cancelled context (simulating a
+	// short-timeout client, e.g. kubelet, that disconnected mid-check).
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest("GET", "/healthz/ready", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	hc.HandleReady(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("caller cancellation must not affect shared evaluation: want 200, got %d", rec.Code)
 	}
 
-	// Set ready
-	hc.SetReady(true)
-	req = httptest.NewRequest(http.MethodGet, "/ready", nil)
-	w = httptest.NewRecorder()
-	hc.HandleReady(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200 after SetReady(true), got %d", w.Code)
-	}
-
-	// Unset ready
-	hc.SetReady(false)
-	req = httptest.NewRequest(http.MethodGet, "/ready", nil)
-	w = httptest.NewRecorder()
-	hc.HandleReady(w, req)
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("expected 503 after SetReady(false), got %d", w.Code)
+	// A normal, uncancelled request immediately after must also see 200 —
+	// the cached result must not have been poisoned by the first caller's
+	// cancelled context.
+	rec2 := httptest.NewRecorder()
+	hc.HandleReady(rec2, httptest.NewRequest("GET", "/healthz/ready", nil))
+	if rec2.Code != 200 {
+		t.Fatalf("want 200 for follow-up request, got %d", rec2.Code)
 	}
 }

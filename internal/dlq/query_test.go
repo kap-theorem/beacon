@@ -29,14 +29,37 @@ func noopLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(nil, &slog.HandlerOptions{Level: slog.LevelError + 100}))
 }
 
-func mustPayloads(t *testing.T, msg *models.EmailMessage) *commonpb.Payloads {
+// legacyEmailMessage mirrors the pre-cutover /notify/email request shape
+// (models.EmailMessage, deleted in Task 12's v1 cutover) so history-decode
+// tests can still exercise Notification.Normalize() against legacy-shaped
+// workflow inputs recorded by pre-cutover workflows.
+type legacyEmailMessage struct {
+	To      string `json:"to"`
+	Subject string `json:"subject"`
+	Body    string `json:"body"`
+}
+
+func mustPayloads(t *testing.T, msg *legacyEmailMessage) *commonpb.Payloads {
 	t.Helper()
 	p, err := converter.GetDefaultDataConverter().ToPayloads(msg)
 	require.NoError(t, err)
 	return p
 }
 
+// mustNotificationPayloads encodes an envelope-shaped (v2) workflow input, as
+// opposed to mustPayloads' legacy EmailMessage shape.
+func mustNotificationPayloads(t *testing.T, n *models.Notification) *commonpb.Payloads {
+	t.Helper()
+	p, err := converter.GetDefaultDataConverter().ToPayloads(n)
+	require.NoError(t, err)
+	return p
+}
+
 func makeExecInfo(workflowID, runID, taskQueue string, status enumspb.WorkflowExecutionStatus, closeTime time.Time) *workflowpb.WorkflowExecutionInfo {
+	return makeExecInfoWithMemo(workflowID, runID, taskQueue, status, closeTime, nil)
+}
+
+func makeExecInfoWithMemo(workflowID, runID, taskQueue string, status enumspb.WorkflowExecutionStatus, closeTime time.Time, memo *commonpb.Memo) *workflowpb.WorkflowExecutionInfo {
 	return &workflowpb.WorkflowExecutionInfo{
 		Execution: &commonpb.WorkflowExecution{
 			WorkflowId: workflowID,
@@ -45,6 +68,7 @@ func makeExecInfo(workflowID, runID, taskQueue string, status enumspb.WorkflowEx
 		TaskQueue: taskQueue,
 		Status:    status,
 		CloseTime: timestamppb.New(closeTime),
+		Memo:      memo,
 	}
 }
 
@@ -175,7 +199,7 @@ func TestStatusMatches_SpecificFilter(t *testing.T) {
 func TestExtractWorkflowDetails_StartedAndFailed(t *testing.T) {
 	mc := &mocks.Client{}
 	ctx := context.Background()
-	msg := &models.EmailMessage{To: "user@example.com", Subject: "Hello", Body: "World"}
+	msg := &legacyEmailMessage{To: "user@example.com", Subject: "Hello", Body: "World"}
 	payloads := mustPayloads(t, msg)
 	failTime := time.Now().Add(-5 * time.Minute)
 
@@ -201,7 +225,7 @@ func TestExtractWorkflowDetails_StartedAndFailed(t *testing.T) {
 func TestExtractWorkflowDetails_MultipleActivityFailures(t *testing.T) {
 	mc := &mocks.Client{}
 	ctx := context.Background()
-	msg := &models.EmailMessage{To: "a@b.com", Subject: "Test"}
+	msg := &legacyEmailMessage{To: "a@b.com", Subject: "Test"}
 	payloads := mustPayloads(t, msg)
 	t1 := time.Now().Add(-10 * time.Minute)
 	t2 := time.Now().Add(-5 * time.Minute)
@@ -492,7 +516,7 @@ func TestQueryFailedWorkflows_NegativeOffsetClampedToZero(t *testing.T) {
 	resp := makeListResp(executions...)
 	mc.On("ListClosedWorkflow", ctx, mock.Anything).Return(resp, nil)
 
-	msg := &models.EmailMessage{To: "user@example.com", Subject: "Hello", Body: "World"}
+	msg := &legacyEmailMessage{To: "user@example.com", Subject: "Hello", Body: "World"}
 	iter := buildHistoryIter([]*historypb.HistoryEvent{makeStartedEvent(mustPayloads(t, msg))})
 	mc.On("GetWorkflowHistory", ctx, "wf1", "run1", false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
 
@@ -561,7 +585,7 @@ func TestQueryFailedWorkflows_WithLastAttemptAt(t *testing.T) {
 	resp := makeListResp(executions...)
 	mc.On("ListClosedWorkflow", ctx, mock.Anything).Return(resp, nil)
 
-	msg := &models.EmailMessage{To: "x@y.com", Subject: "sub"}
+	msg := &legacyEmailMessage{To: "x@y.com", Subject: "sub"}
 	payloads := mustPayloads(t, msg)
 	events := []*historypb.HistoryEvent{
 		makeStartedEvent(payloads),
@@ -625,5 +649,170 @@ func TestDLQService_QueryFailures_IntegrationPath(t *testing.T) {
 	results, err := svc.QueryFailures(ctx, FailureFilter{Limit: 10})
 	require.NoError(t, err)
 	assert.Len(t, results, 1)
+	mc.AssertExpectations(t)
+}
+
+// ---------- memo-based tenant/service/provider filtering (Task 10) ----------
+
+// TestQueryFailedWorkflows_EnvelopeFormatHistory closes a coverage gap from
+// Task 8: legacy-shaped (EmailMessage) histories were tested but envelope
+// (models.Notification) shaped histories, which is what v2 /v1/notify
+// workflows actually record, were not.
+func TestQueryFailedWorkflows_EnvelopeFormatHistory(t *testing.T) {
+	mc := &mocks.Client{}
+	ctx := context.Background()
+	now := time.Now()
+
+	executions := []*workflowpb.WorkflowExecutionInfo{
+		makeExecInfo("wf-envelope", "r1", "email-sendgrid-queue", enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, now),
+	}
+	resp := makeListResp(executions...)
+	mc.On("ListClosedWorkflow", ctx, mock.Anything).Return(resp, nil)
+
+	n := &models.Notification{
+		Channel: "email", Service: "billing-api", Tenant: "payments",
+		Email: &models.EmailPayload{To: "v2@x.com", Subject: "v2subj", Body: "b"},
+	}
+	payloads := mustNotificationPayloads(t, n)
+	iter := buildHistoryIter([]*historypb.HistoryEvent{makeStartedEvent(payloads)})
+	mc.On("GetWorkflowHistory", ctx, "wf-envelope", "r1", false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
+
+	filter := FailureFilter{Limit: 10}
+	results, err := NewDLQService(mc, "default", noopLogger()).QueryFailures(ctx, filter)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "v2@x.com", results[0].Recipient)
+	assert.Equal(t, "v2subj", results[0].Subject)
+	mc.AssertExpectations(t)
+}
+
+// TestQueryFailedWorkflows_TenantFilter proves filter.Tenant scopes results to
+// the matching workflow's memo tenant only, and that Service/Tenant are
+// populated on the returned FailedNotification from the memo.
+func TestQueryFailedWorkflows_TenantFilter(t *testing.T) {
+	mc := &mocks.Client{}
+	ctx := context.Background()
+	now := time.Now()
+
+	memoPayments := memoFixture(t, map[string]string{"tenant": "payments", "service": "billing-api"})
+	memoObs := memoFixture(t, map[string]string{"tenant": "obs", "service": "metrics-agent"})
+
+	executions := []*workflowpb.WorkflowExecutionInfo{
+		makeExecInfoWithMemo("wf-payments", "r1", "email-sendgrid-queue", enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, now, memoPayments),
+		makeExecInfoWithMemo("wf-obs", "r2", "email-sendgrid-queue", enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, now, memoObs),
+	}
+	resp := makeListResp(executions...)
+	mc.On("ListClosedWorkflow", ctx, mock.Anything).Return(resp, nil)
+
+	// Only "wf-payments" passes the tenant filter, so only its history is fetched.
+	iter := emptyHistoryIter()
+	mc.On("GetWorkflowHistory", ctx, "wf-payments", "r1", false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
+
+	filter := FailureFilter{Tenant: "payments", Limit: 10}
+	results, err := NewDLQService(mc, "default", noopLogger()).QueryFailures(ctx, filter)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "wf-payments", results[0].WorkflowID)
+	assert.Equal(t, "payments", results[0].Tenant)
+	assert.Equal(t, "billing-api", results[0].Service)
+	mc.AssertExpectations(t)
+}
+
+// ---------- pagination follow-through across ListClosedWorkflow pages ----------
+
+// TestQueryFailures_FollowsPagesUntilTenantMatchesFound proves that when a
+// tenant filter discards an entire page of results, QueryFailures keeps
+// following NextPageToken (instead of returning what looks like "no
+// failures") until it finds a page containing matches for the tenant.
+func TestQueryFailures_FollowsPagesUntilTenantMatchesFound(t *testing.T) {
+	mc := &mocks.Client{}
+	ctx := context.Background()
+	now := time.Now()
+
+	memoOther := memoFixture(t, map[string]string{"tenant": "other"})
+	memoPayments := memoFixture(t, map[string]string{"tenant": "payments"})
+
+	page1 := &workflowservice.ListClosedWorkflowExecutionsResponse{
+		Executions: []*workflowpb.WorkflowExecutionInfo{
+			makeExecInfoWithMemo("wf-other-1", "r1", "email-sendgrid-queue", enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, now, memoOther),
+			makeExecInfoWithMemo("wf-other-2", "r2", "email-sendgrid-queue", enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, now, memoOther),
+		},
+		NextPageToken: []byte("page-2"),
+	}
+	page2 := &workflowservice.ListClosedWorkflowExecutionsResponse{
+		Executions: []*workflowpb.WorkflowExecutionInfo{
+			makeExecInfoWithMemo("wf-payments-1", "r3", "email-sendgrid-queue", enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, now, memoPayments),
+		},
+		NextPageToken: nil,
+	}
+
+	mc.On("ListClosedWorkflow", ctx, mock.MatchedBy(func(req *workflowservice.ListClosedWorkflowExecutionsRequest) bool {
+		return len(req.NextPageToken) == 0
+	})).Return(page1, nil).Once()
+	mc.On("ListClosedWorkflow", ctx, mock.MatchedBy(func(req *workflowservice.ListClosedWorkflowExecutionsRequest) bool {
+		return string(req.NextPageToken) == "page-2"
+	})).Return(page2, nil).Once()
+
+	iter := emptyHistoryIter()
+	mc.On("GetWorkflowHistory", ctx, "wf-payments-1", "r3", false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
+
+	filter := FailureFilter{Tenant: "payments", Limit: 10}
+	results, err := NewDLQService(mc, "default", noopLogger()).QueryFailures(ctx, filter)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "wf-payments-1", results[0].WorkflowID)
+	assert.Equal(t, "payments", results[0].Tenant)
+	mc.AssertNumberOfCalls(t, "ListClosedWorkflow", 2)
+	mc.AssertExpectations(t)
+}
+
+// TestQueryFailures_StopsAtPageCap proves the pagination loop is bounded: if
+// every page returns a NextPageToken but never a matching tenant, the loop
+// stops after maxListPages calls rather than paging indefinitely.
+func TestQueryFailures_StopsAtPageCap(t *testing.T) {
+	mc := &mocks.Client{}
+	ctx := context.Background()
+	now := time.Now()
+
+	memoOther := memoFixture(t, map[string]string{"tenant": "other"})
+	resp := &workflowservice.ListClosedWorkflowExecutionsResponse{
+		Executions: []*workflowpb.WorkflowExecutionInfo{
+			makeExecInfoWithMemo("wf-other", "r1", "email-sendgrid-queue", enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, now, memoOther),
+		},
+		NextPageToken: []byte("more"),
+	}
+
+	mc.On("ListClosedWorkflow", ctx, mock.Anything).Return(resp, nil)
+
+	filter := FailureFilter{Tenant: "payments", Limit: 10}
+	results, err := NewDLQService(mc, "default", noopLogger()).QueryFailures(ctx, filter)
+	require.NoError(t, err)
+	assert.Empty(t, results)
+	mc.AssertNumberOfCalls(t, "ListClosedWorkflow", maxListPages)
+}
+
+// TestQueryFailedWorkflows_MemoProviderOverridesTaskQueueParse proves that
+// when a memo "provider" field is present it wins over the task-queue-parsed
+// provider (which stays as a fallback for pre-Task-9 workflows with no memo).
+func TestQueryFailedWorkflows_MemoProviderOverridesTaskQueueParse(t *testing.T) {
+	mc := &mocks.Client{}
+	ctx := context.Background()
+	now := time.Now()
+
+	memo := memoFixture(t, map[string]string{"provider": "mailgun-eu"})
+	executions := []*workflowpb.WorkflowExecutionInfo{
+		makeExecInfoWithMemo("wf-memo-provider", "r1", "email-sendgrid-queue", enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, now, memo),
+	}
+	resp := makeListResp(executions...)
+	mc.On("ListClosedWorkflow", ctx, mock.Anything).Return(resp, nil)
+
+	iter := emptyHistoryIter()
+	mc.On("GetWorkflowHistory", ctx, "wf-memo-provider", "r1", false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
+
+	filter := FailureFilter{Limit: 10}
+	results, err := NewDLQService(mc, "default", noopLogger()).QueryFailures(ctx, filter)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "mailgun-eu", results[0].Provider)
 	mc.AssertExpectations(t)
 }

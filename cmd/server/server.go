@@ -3,12 +3,16 @@ package main
 import (
 	"beacon/internal/api"
 	"beacon/internal/app"
+	"beacon/internal/auth"
+	"beacon/internal/channel"
 	confpkg "beacon/internal/config"
 	"beacon/internal/dlq"
 	"beacon/internal/notifier"
+	"beacon/internal/policy"
 	"beacon/utils"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -38,12 +42,11 @@ func main() {
 	}
 
 	bundle := confpkg.GetConfigService().GetConfig()
-	registry, err := notifier.NewEmailClientRegistry(bundle)
-	if err != nil {
-		logger.Error("failed to build email client registry", slog.Any("error", err))
-		os.Exit(1)
-	}
-	logger.Info("email client registry ready", slog.Any("providers", registry.ProviderNames()))
+	authRegistry := auth.NewRegistry(bundle)
+	providerRegistry := notifier.NewProviderRegistry(bundle)
+	channels := channel.NewRegistry()
+	limiter := policy.NewMemoryLimiter(nil)
+	logger.Info("provider registry ready", slog.Any("providers", providerRegistry.Names("email")))
 
 	// Long-lived context — cancelled on SIGTERM/SIGINT to stop background
 	// goroutines and trigger graceful HTTP server shutdown.
@@ -53,9 +56,8 @@ func main() {
 	// ConfigWatcher: poll interval defaults to 300 s, overridden by CONFIG_POLL_INTERVAL (seconds).
 	pollInterval := app.ParsePollInterval(os.Getenv("CONFIG_POLL_INTERVAL"), 300*time.Second)
 	watcher := confpkg.NewConfigWatcher(confpkg.GetConfigService(), pollInterval, func(b *confpkg.ConfigBundle) {
-		if reloadErr := registry.Reload(b); reloadErr != nil {
-			logger.Error("registry reload failed", slog.Any("error", reloadErr))
-		}
+		providerRegistry.Reload(b)
+		authRegistry.Reload(b)
 	}, logger)
 	go watcher.Start(ctx)
 
@@ -82,12 +84,28 @@ func main() {
 		dlqSvc = dlq.NewDLQService(temporalClient, namespace, logger)
 	}
 
-	healthChecker := confpkg.NewHealthChecker()
-	healthChecker.SetReady(true)
+	healthChecker := confpkg.NewHealthChecker(
+		confpkg.ReadinessCheck{Name: "config", Fn: func(ctx context.Context) error {
+			if confpkg.GetConfigService().GetConfig() == nil {
+				return fmt.Errorf("config not loaded")
+			}
+			return nil
+		}},
+		confpkg.ReadinessCheck{Name: "temporal", Fn: func(ctx context.Context) error {
+			if temporalClient == nil {
+				return fmt.Errorf("temporal client unavailable")
+			}
+			_, err := temporalClient.CheckHealth(ctx, &client.CheckHealthRequest{})
+			return err
+		}},
+	)
 
 	mux := app.BuildServerMux(app.ServerDeps{
 		TemporalClient: temporalClient,
-		Registry:       registry,
+		Channels:       channels,
+		Providers:      providerRegistry,
+		AuthRegistry:   authRegistry,
+		Limiter:        limiter,
 		ConfigService:  confpkg.GetConfigService(),
 		Health:         healthChecker,
 		DLQService:     dlqSvc,

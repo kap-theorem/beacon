@@ -1,8 +1,6 @@
 package dlq
 
 import (
-	"beacon/internal/notifier"
-	"beacon/internal/temporal"
 	"context"
 	"errors"
 	"fmt"
@@ -21,8 +19,10 @@ var ErrWorkflowNotFound = errors.New("workflow not found")
 // ErrReplayAlreadyRunning is returned when a replay workflow for the given ID is already in progress.
 var ErrReplayAlreadyRunning = errors.New("replay already in progress for this workflow")
 
-// ReplayWorkflow fetches the original workflow input and dispatches a new SendEmailWorkflow execution (S5).
-func (s *DLQService) ReplayWorkflow(ctx context.Context, workflowID string) (*ReplayResult, error) {
+// ReplayWorkflow re-dispatches a terminal failed workflow. When callerTenant
+// is non-empty, the original workflow must belong to that tenant; mismatches
+// return ErrWorkflowNotFound (existence is not disclosed across tenants).
+func (s *DLQService) ReplayWorkflow(ctx context.Context, workflowID, callerTenant string) (*ReplayResult, error) {
 	descResp, err := s.tc.DescribeWorkflowExecution(ctx, workflowID, "")
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrWorkflowNotFound, workflowID)
@@ -30,7 +30,10 @@ func (s *DLQService) ReplayWorkflow(ctx context.Context, workflowID string) (*Re
 
 	info := descResp.WorkflowExecutionInfo
 	runID := info.Execution.RunId
-	taskQueue := info.TaskQueue
+
+	if callerTenant != "" && memoString(info.Memo, "tenant") != callerTenant {
+		return nil, fmt.Errorf("%w: %s", ErrWorkflowNotFound, workflowID)
+	}
 
 	switch info.Status {
 	case enumspb.WORKFLOW_EXECUTION_STATUS_FAILED,
@@ -48,22 +51,29 @@ func (s *DLQService) ReplayWorkflow(ctx context.Context, workflowID string) (*Re
 	if details.msg == nil {
 		return nil, fmt.Errorf("original workflow input not found in history for %s", workflowID)
 	}
+	if details.msg.Email == nil {
+		return nil, fmt.Errorf("workflow %s input decoded but has no email payload; replay for non-email channels is not supported yet", workflowID)
+	}
 
-	provider := parseProviderFromTaskQueue(taskQueue)
-	replayQueue := notifier.TaskQueueFor(provider)
 	// Use a deterministic replay ID so Temporal itself rejects duplicate starts.
 	newWorkflowID := fmt.Sprintf("replay-%s", workflowID)
 
 	run, err := s.tc.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID:                    newWorkflowID,
-		TaskQueue:             replayQueue,
+		TaskQueue:             info.TaskQueue,
 		WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
-	}, temporal.SendEmailWorkflow, details.msg)
+		Memo:                  memoToMap(info.Memo),
+	}, info.Type.Name, details.msg)
 	if err != nil {
 		if temporalerr.IsWorkflowExecutionAlreadyStartedError(err) {
 			return nil, ErrReplayAlreadyRunning
 		}
 		return nil, fmt.Errorf("dispatch replay workflow: %w", err)
+	}
+
+	provider := memoString(info.Memo, "provider")
+	if provider == "" {
+		provider = parseProviderFromTaskQueue(info.TaskQueue)
 	}
 
 	return &ReplayResult{

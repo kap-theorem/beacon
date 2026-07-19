@@ -69,15 +69,16 @@ else
 fi
 
 echo -e "\n${BLUE}=== Test 3: Config Loading ===${NC}"
-RESPONSE=$(curl -s -X POST http://localhost:6969/notify/email \
+RESPONSE=$(curl -s -X POST http://localhost:6969/v1/notify/email \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer bk_k1_local-test-key" \
     -d '{
         "to": "test@example.com",
         "subject": "Test Email",
         "body": "Configuration is working!"
     }')
 
-if echo "$RESPONSE" | grep -q "email notification triggered"; then
+if echo "$RESPONSE" | grep -q "notification accepted"; then
     echo -e "${GREEN}✓ Config loading and email endpoint working${NC}"
 else
     echo -e "${YELLOW}Note: Email trigger may require Temporal setup${NC}"

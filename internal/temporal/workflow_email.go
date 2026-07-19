@@ -8,7 +8,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-func SendEmailWorkflow(ctx workflow.Context, msg *models.EmailMessage) error {
+func SendEmailWorkflow(ctx workflow.Context, n *models.Notification) error {
 	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:    time.Second * 5,
@@ -18,5 +18,5 @@ func SendEmailWorkflow(ctx workflow.Context, msg *models.EmailMessage) error {
 		},
 		StartToCloseTimeout: time.Minute * 2,
 	})
-	return workflow.ExecuteActivity(ctx, "SendEmailActivity", msg).Get(ctx, nil)
+	return workflow.ExecuteActivity(ctx, "SendEmailActivity", n).Get(ctx, nil)
 }

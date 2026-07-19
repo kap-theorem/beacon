@@ -18,9 +18,11 @@ Beacon is an async notification service built in Go. It currently supports email
 ## Features
 
 - **Async email delivery** via Temporal workflows with automatic retries
-- **Multi-provider SMTP routing** — configure multiple providers in Infisical and route by category using `client_hint`
-- **Config watcher** — hot-reloads provider configs from Infisical without restart (`CONFIG_POLL_INTERVAL`)
-- **Dead Letter Queue** — query failed workflows (`GET /dlq/failed`) and replay them (`POST /dlq/replay/{workflowID}`)
+- **Per-service API-key auth** — every `/v1/*` request requires `Authorization: Bearer bk_<keyid>_<secret>` (or `X-API-Key`); each service is bound to an allowlist of channels/providers, a policy-locked sender identity, and its own rate limits
+- **Idempotent sends** — an optional `Idempotency-Key` header deduplicates retried requests
+- **Multi-provider SMTP routing** — configure multiple providers in Infisical; each service picks from its allowed providers or falls back to its configured default
+- **Config watcher** — hot-reloads the control plane (providers, tenants, services) from Infisical without restart (`CONFIG_POLL_INTERVAL`)
+- **Dead Letter Queue** — query failed workflows (`GET /v1/dlq/failed`) and replay them (`POST /v1/dlq/replay/{workflowID}`), tenant-scoped for non-admin callers
 - **Admin config refresh** — manually trigger a reload via `POST /admin/config/refresh` (requires `ADMIN_TOKEN`)
 - **Health probes** — `/healthz/live` and `/healthz/ready` for liveness and readiness checks
 
@@ -36,7 +38,8 @@ Beacon is an async notification service built in Go. It currently supports email
 2. Set up your environment:
    ```bash
    cp .env.example .env
-   # Set DEV_MODE=true and fill in DEV_SMTP_* vars
+   # Set DEV_MODE=true, fill in DEV_SMTP_* vars, and set DEV_API_KEY
+   # (the synthesized "dev" service's API key — see docs/CONFIGURATION.md)
    ```
 
 3. Run the services:
@@ -47,8 +50,9 @@ Beacon is an async notification service built in Go. It currently supports email
 
 4. Send a test email:
    ```bash
-   curl -X POST http://localhost:6969/notify/email \
+   curl -X POST http://localhost:6969/v1/notify/email \
      -H "Content-Type: application/json" \
+     -H "Authorization: Bearer $DEV_API_KEY" \
      -d '{"to":"you@example.com","subject":"Test","body":"Hello!"}'
    ```
 
@@ -109,4 +113,4 @@ bash scripts/readiness-check.sh
 - Go 1.24+
 - [Temporal](https://learn.temporal.io/getting_started/go/dev_environment/) running at `localhost:7233`
 - An SMTP provider or dev mode (`DEV_MODE=true`) with local SMTP vars
-- [Infisical](docs/DEPLOYMENT.md#4-infisical-setup) for production SMTP secret management (optional in dev mode)
+- [Infisical](docs/DEPLOYMENT.md#4-infisical-setup-control-plane) for production SMTP secret management (optional in dev mode)

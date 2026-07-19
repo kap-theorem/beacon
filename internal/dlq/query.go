@@ -16,6 +16,10 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// maxListPages bounds the number of ListClosedWorkflow RPCs issued per DLQ
+// query, so a tenant filter that discards most of a page cannot page forever.
+const maxListPages = 10
+
 // QueryFailures lists closed SendEmailWorkflow executions and applies in-process filtering (S4, S6).
 // Uses ListClosedWorkflow (no Elasticsearch required) with TypeFilter, then filters by status/provider/date.
 func (s *DLQService) QueryFailures(ctx context.Context, filter FailureFilter) ([]*FailedNotification, error) {
@@ -45,51 +49,75 @@ func (s *DLQService) QueryFailures(ctx context.Context, filter FailureFilter) ([
 		fetchSize = 50
 	}
 
-	resp, err := s.tc.ListClosedWorkflow(ctx, &workflowservice.ListClosedWorkflowExecutionsRequest{
-		Namespace:       s.namespace,
-		MaximumPageSize: fetchSize,
-		StartTimeFilter: &filterpb.StartTimeFilter{
-			EarliestTime: timestamppb.New(from),
-			LatestTime:   timestamppb.New(to),
-		},
-		Filters: &workflowservice.ListClosedWorkflowExecutionsRequest_TypeFilter{
-			TypeFilter: &filterpb.WorkflowTypeFilter{Name: "SendEmailWorkflow"},
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("list closed workflows: %w", err)
-	}
-
 	// Collect matching executions first (lightweight — no history RPCs), page
 	// them, then fetch workflow history only for the executions being returned.
 	type matchedExec struct {
 		workflowID string
 		runID      string
 		provider   string
+		service    string
+		tenant     string
 		status     string
 		closedAt   time.Time
 	}
 
 	var matches []matchedExec
+	var nextPageToken []byte
 
-	for _, exec := range resp.Executions {
-		status := workflowStatus(exec.Status)
-		if !statusMatches(status, filter.Status) {
-			continue
-		}
-
-		provider := parseProviderFromTaskQueue(exec.TaskQueue)
-		if filter.Provider != "" && provider != filter.Provider {
-			continue
-		}
-
-		matches = append(matches, matchedExec{
-			workflowID: exec.Execution.WorkflowId,
-			runID:      exec.Execution.RunId,
-			provider:   provider,
-			status:     status,
-			closedAt:   exec.CloseTime.AsTime(),
+	for page := 0; page < maxListPages; page++ {
+		resp, err := s.tc.ListClosedWorkflow(ctx, &workflowservice.ListClosedWorkflowExecutionsRequest{
+			Namespace:       s.namespace,
+			MaximumPageSize: fetchSize,
+			NextPageToken:   nextPageToken,
+			StartTimeFilter: &filterpb.StartTimeFilter{
+				EarliestTime: timestamppb.New(from),
+				LatestTime:   timestamppb.New(to),
+			},
+			Filters: &workflowservice.ListClosedWorkflowExecutionsRequest_TypeFilter{
+				TypeFilter: &filterpb.WorkflowTypeFilter{Name: "SendEmailWorkflow"},
+			},
 		})
+		if err != nil {
+			return nil, fmt.Errorf("list closed workflows: %w", err)
+		}
+
+		for _, exec := range resp.Executions {
+			status := workflowStatus(exec.Status)
+			if !statusMatches(status, filter.Status) {
+				continue
+			}
+
+			tenant := memoString(exec.Memo, "tenant")
+			if filter.Tenant != "" && tenant != filter.Tenant {
+				continue
+			}
+			service := memoString(exec.Memo, "service")
+
+			provider := memoString(exec.Memo, "provider")
+			if provider == "" {
+				provider = parseProviderFromTaskQueue(exec.TaskQueue)
+			}
+			if filter.Provider != "" && provider != filter.Provider {
+				continue
+			}
+
+			matches = append(matches, matchedExec{
+				workflowID: exec.Execution.WorkflowId,
+				runID:      exec.Execution.RunId,
+				provider:   provider,
+				service:    service,
+				tenant:     tenant,
+				status:     status,
+				closedAt:   exec.CloseTime.AsTime(),
+			})
+		}
+
+		nextPageToken = resp.NextPageToken
+		// Stop once we have enough post-filter matches to serve the requested
+		// page, or there are no more pages to fetch.
+		if len(matches) >= limit+filter.Offset || len(nextPageToken) == 0 {
+			break
+		}
 	}
 
 	if filter.Offset >= len(matches) {
@@ -123,6 +151,8 @@ func (s *DLQService) QueryFailures(ctx context.Context, filter FailureFilter) ([
 			Recipient:     details.recipient,
 			Subject:       details.subject,
 			Provider:      m.provider,
+			Service:       m.service,
+			Tenant:        m.tenant,
 			FailureReason: details.failureReason,
 			RetryCount:    details.retryCount,
 			LastAttemptAt: lastAttemptAt,
@@ -135,7 +165,7 @@ func (s *DLQService) QueryFailures(ctx context.Context, filter FailureFilter) ([
 }
 
 type workflowDetails struct {
-	msg           *models.EmailMessage // full original input; nil if not decoded
+	msg           *models.Notification // full original input (envelope form); nil if not decoded
 	recipient     string
 	subject       string
 	failureReason string
@@ -158,11 +188,17 @@ func extractWorkflowDetails(ctx context.Context, tc client.Client, workflowID, r
 		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED:
 			attrs := event.GetWorkflowExecutionStartedEventAttributes()
 			if attrs != nil && attrs.Input != nil {
-				var msg models.EmailMessage
-				if decErr := converter.GetDefaultDataConverter().FromPayloads(attrs.Input, &msg); decErr == nil {
-					d.msg = &msg
-					d.recipient = msg.To
-					d.subject = msg.Subject
+				var n models.Notification
+				if decErr := converter.GetDefaultDataConverter().FromPayloads(attrs.Input, &n); decErr == nil {
+					// Workflow input may be either the envelope shape (new) or the
+					// legacy EmailMessage shape recorded by pre-cutover workflows;
+					// Normalize upgrades the latter so both decode to n.Email.
+					n.Normalize()
+					d.msg = &n
+					if n.Email != nil {
+						d.recipient = n.Email.To
+						d.subject = n.Email.Subject
+					}
 				}
 			}
 
@@ -196,8 +232,10 @@ func extractWorkflowDetails(ctx context.Context, tc client.Client, workflowID, r
 }
 
 func parseProviderFromTaskQueue(tq string) string {
-	tq = strings.TrimPrefix(tq, "email-")
 	tq = strings.TrimSuffix(tq, "-queue")
+	if i := strings.Index(tq, "-"); i >= 0 {
+		return tq[i+1:]
+	}
 	return tq
 }
 

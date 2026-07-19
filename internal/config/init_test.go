@@ -14,6 +14,7 @@ import (
 func TestInitializeConfigService_DevMode_Success(t *testing.T) {
 	t.Setenv("DEV_MODE", "true")
 	t.Setenv("DEV_SMTP_HOST", "smtp.devhost.local")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
 
 	svc, err := InitializeConfigService(context.Background(), testLogger())
 	if err != nil {
@@ -45,6 +46,7 @@ func TestInitializeConfigService_DevMode_MissingHost(t *testing.T) {
 
 func TestBuildDevBundle_DefaultPort(t *testing.T) {
 	t.Setenv("DEV_SMTP_HOST", "smtp.example.com")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
 	// DEV_SMTP_PORT is not set → defaults to 587
 
 	bundle, err := buildDevBundle()
@@ -62,6 +64,7 @@ func TestBuildDevBundle_DefaultPort(t *testing.T) {
 
 func TestBuildDevBundle_CustomPort(t *testing.T) {
 	t.Setenv("DEV_SMTP_HOST", "smtp.example.com")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
 	t.Setenv("DEV_SMTP_PORT", "465")
 
 	bundle, err := buildDevBundle()
@@ -86,6 +89,7 @@ func TestBuildDevBundle_BadPort(t *testing.T) {
 
 func TestBuildDevBundle_DefaultName(t *testing.T) {
 	t.Setenv("DEV_SMTP_HOST", "smtp.example.com")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
 	// DEV_SMTP_NAME is not set → defaults to "dev"
 
 	bundle, err := buildDevBundle()
@@ -99,6 +103,7 @@ func TestBuildDevBundle_DefaultName(t *testing.T) {
 
 func TestBuildDevBundle_CustomName(t *testing.T) {
 	t.Setenv("DEV_SMTP_HOST", "smtp.example.com")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
 	t.Setenv("DEV_SMTP_NAME", "mydev")
 
 	bundle, err := buildDevBundle()
@@ -112,6 +117,7 @@ func TestBuildDevBundle_CustomName(t *testing.T) {
 
 func TestBuildDevBundle_DefaultAuthType(t *testing.T) {
 	t.Setenv("DEV_SMTP_HOST", "smtp.example.com")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
 	// DEV_SMTP_AUTH_TYPE not set → defaults to AuthPlain
 
 	bundle, err := buildDevBundle()
@@ -126,6 +132,7 @@ func TestBuildDevBundle_DefaultAuthType(t *testing.T) {
 
 func TestBuildDevBundle_CustomAuthType(t *testing.T) {
 	t.Setenv("DEV_SMTP_HOST", "smtp.example.com")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
 	t.Setenv("DEV_SMTP_AUTH_TYPE", "LOGIN")
 
 	bundle, err := buildDevBundle()
@@ -140,6 +147,7 @@ func TestBuildDevBundle_CustomAuthType(t *testing.T) {
 
 func TestBuildDevBundle_DefaultFromAddress_ViaUsername(t *testing.T) {
 	t.Setenv("DEV_SMTP_HOST", "smtp.example.com")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
 	t.Setenv("DEV_SMTP_USERNAME", "user@example.com")
 	// DEV_SMTP_FROM is not set → fallback to username
 
@@ -155,6 +163,7 @@ func TestBuildDevBundle_DefaultFromAddress_ViaUsername(t *testing.T) {
 
 func TestBuildDevBundle_DefaultFromAddress_Fallback(t *testing.T) {
 	t.Setenv("DEV_SMTP_HOST", "smtp.example.com")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
 	// Neither DEV_SMTP_FROM nor DEV_SMTP_USERNAME set → "noreply@beacon.local"
 
 	bundle, err := buildDevBundle()
@@ -169,6 +178,7 @@ func TestBuildDevBundle_DefaultFromAddress_Fallback(t *testing.T) {
 
 func TestBuildDevBundle_ExplicitFromAddress(t *testing.T) {
 	t.Setenv("DEV_SMTP_HOST", "smtp.example.com")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
 	t.Setenv("DEV_SMTP_FROM", "explicit@example.com")
 	t.Setenv("DEV_SMTP_USERNAME", "user@example.com")
 
@@ -184,6 +194,7 @@ func TestBuildDevBundle_ExplicitFromAddress(t *testing.T) {
 
 func TestBuildDevBundle_DefaultFromName(t *testing.T) {
 	t.Setenv("DEV_SMTP_HOST", "smtp.example.com")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
 	// DEV_SMTP_FROM_NAME not set → "Beacon"
 
 	bundle, err := buildDevBundle()
@@ -198,6 +209,7 @@ func TestBuildDevBundle_DefaultFromName(t *testing.T) {
 
 func TestBuildDevBundle_CustomFromName(t *testing.T) {
 	t.Setenv("DEV_SMTP_HOST", "smtp.example.com")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
 	t.Setenv("DEV_SMTP_FROM_NAME", "My App")
 
 	bundle, err := buildDevBundle()
@@ -212,6 +224,7 @@ func TestBuildDevBundle_CustomFromName(t *testing.T) {
 
 func TestBuildDevBundle_ProviderAlias_DefaultsToName(t *testing.T) {
 	t.Setenv("DEV_SMTP_HOST", "smtp.example.com")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
 	t.Setenv("DEV_SMTP_NAME", "myname")
 	// DEV_SMTP_PROVIDER not set → Provider == Name
 
@@ -227,6 +240,7 @@ func TestBuildDevBundle_ProviderAlias_DefaultsToName(t *testing.T) {
 
 func TestBuildDevBundle_ProviderAlias_Explicit(t *testing.T) {
 	t.Setenv("DEV_SMTP_HOST", "smtp.example.com")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
 	t.Setenv("DEV_SMTP_NAME", "myname")
 	t.Setenv("DEV_SMTP_PROVIDER", "sendgrid")
 
@@ -271,6 +285,7 @@ func TestFirstNonEmpty_NoArgs(t *testing.T) {
 func TestGetConfigService_ReturnsGlobal(t *testing.T) {
 	t.Setenv("DEV_MODE", "true")
 	t.Setenv("DEV_SMTP_HOST", "smtp.devhost.local")
+	t.Setenv("DEV_API_KEY", "bk_k1_devsecret")
 
 	svc, err := InitializeConfigService(context.Background(), testLogger())
 	if err != nil {
@@ -309,6 +324,10 @@ func newInfisicalTestServer(t *testing.T, providerName string) *httptest.Server 
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("secretPath") != "/beacon/providers/email" {
+			fmt.Fprint(w, `{"secrets": []}`)
+			return
+		}
 		fmt.Fprint(w, body)
 	}))
 	return srv
@@ -372,6 +391,10 @@ func TestInitializeConfigService_ProdPath_ClientSecret(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/api/v1/auth/universal-auth/login" {
 			fmt.Fprint(w, string(authResp))
+			return
+		}
+		if r.URL.Query().Get("secretPath") != "/beacon/providers/email" {
+			fmt.Fprint(w, `{"secrets": []}`)
 			return
 		}
 		fmt.Fprint(w, string(secretsResp))

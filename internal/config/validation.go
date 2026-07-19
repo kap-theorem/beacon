@@ -3,8 +3,11 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
+	"net/mail"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -98,18 +101,18 @@ func validateSemantic(cfg *SMTPClientConfig) *ValidationResult {
 		})
 	}
 
-	if cfg.AuthType != AuthPlain && cfg.AuthType != AuthLogin && cfg.AuthType != AuthOAuth2 {
-		errors = append(errors, FieldError{
-			Field:  "auth_type",
-			Reason: fmt.Sprintf("must be one of %v", []AuthType{AuthPlain, AuthLogin, AuthOAuth2}),
-			Value:  string(cfg.AuthType),
-		})
+	if cfg.AuthType != AuthPlain && cfg.AuthType != AuthLogin {
+		reason := fmt.Sprintf("must be one of %v", []AuthType{AuthPlain, AuthLogin})
+		if cfg.AuthType == AuthOAuth2 {
+			reason = "OAUTH2 is not implemented; configure PLAIN or LOGIN"
+		}
+		errors = append(errors, FieldError{Field: "auth_type", Reason: reason, Value: string(cfg.AuthType)})
 	}
 
-	if cfg.AuthType != AuthOAuth2 && cfg.Username == "" {
+	if cfg.Username == "" {
 		errors = append(errors, FieldError{
 			Field:  "username",
-			Reason: "required for non-OAuth2 auth",
+			Reason: "required",
 		})
 	}
 
@@ -153,4 +156,108 @@ func isValidHost(host string) bool {
 
 	dnsRegex := regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
 	return dnsRegex.MatchString(host) || host == "localhost"
+}
+
+var sha256HexRe = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+var keyIDRe = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+var serviceNameRe = regexp.MustCompile("^[a-z0-9][a-z0-9-]{0,63}$")
+
+// ValidateTenantConfig parses and validates one /beacon/tenants secret.
+func ValidateTenantConfig(rawJSON string) (*TenantConfig, error) {
+	var t TenantConfig
+	if err := json.Unmarshal([]byte(rawJSON), &t); err != nil {
+		return nil, fmt.Errorf("tenant config: invalid JSON: %w", err)
+	}
+	if t.Tenant == "" {
+		return nil, fmt.Errorf("tenant config: field tenant is required")
+	}
+	return &t, nil
+}
+
+// ValidateServiceConfig parses and validates one /beacon/services secret.
+// Cross-references (tenant/provider existence) are checked by ValidateBundleRefs.
+func ValidateServiceConfig(rawJSON string) (*ServiceConfig, error) {
+	var s ServiceConfig
+	if err := json.Unmarshal([]byte(rawJSON), &s); err != nil {
+		return nil, fmt.Errorf("service config: invalid JSON: %w", err)
+	}
+	var errs []FieldError
+	if s.Service == "" {
+		errs = append(errs, FieldError{Field: "service", Reason: "required"})
+	} else if !serviceNameRe.MatchString(s.Service) {
+		errs = append(errs, FieldError{Field: "service", Reason: "must match ^[a-z0-9][a-z0-9-]{0,63}$", Value: s.Service})
+	}
+	if s.Tenant == "" {
+		errs = append(errs, FieldError{Field: "tenant", Reason: "required"})
+	}
+	active := 0
+	for i, k := range s.Keys {
+		if !keyIDRe.MatchString(k.ID) {
+			errs = append(errs, FieldError{Field: fmt.Sprintf("keys[%d].id", i), Reason: "must match ^[a-z0-9-]{1,32}$", Value: k.ID})
+		}
+		if !sha256HexRe.MatchString(k.SHA256) {
+			errs = append(errs, FieldError{Field: fmt.Sprintf("keys[%d].sha256", i), Reason: "must be 64 hex chars"})
+		}
+		if k.State == "active" {
+			active++
+		}
+	}
+	if s.Enabled && active == 0 {
+		errs = append(errs, FieldError{Field: "keys", Reason: "enabled service needs at least one active key"})
+	}
+	for chName, pol := range s.Channels {
+		if chName != "email" {
+			errs = append(errs, FieldError{Field: "channels", Reason: "unknown channel", Value: chName})
+			continue
+		}
+		if pol == nil || len(pol.Providers) == 0 {
+			errs = append(errs, FieldError{Field: chName + ".providers", Reason: "required, non-empty"})
+			continue
+		}
+		if !slices.Contains(pol.Providers, pol.DefaultProvider) {
+			errs = append(errs, FieldError{Field: chName + ".default_provider", Reason: "must be in providers list", Value: pol.DefaultProvider})
+		}
+		if pol.From != nil {
+			if _, err := mail.ParseAddress(pol.From.Address); err != nil {
+				errs = append(errs, FieldError{Field: chName + ".from.address", Reason: "invalid email address", Value: pol.From.Address})
+			}
+		}
+		if pol.Rate.RPM < 1 {
+			errs = append(errs, FieldError{Field: chName + ".rate.rpm", Reason: "must be >= 1"})
+		}
+		if pol.Rate.Daily < 1 {
+			errs = append(errs, FieldError{Field: chName + ".rate.daily", Reason: "must be >= 1"})
+		}
+	}
+	if len(errs) > 0 {
+		return nil, fmt.Errorf("validation error: %w", &ValidationResult{Errors: errs})
+	}
+	return &s, nil
+}
+
+// ValidateBundleRefs enforces cross-references after a full bundle is loaded:
+// unknown tenant -> reject; unknown provider in an allowlist -> warn only
+// (providers hot-reload separately; requests bound to a missing provider 503).
+func ValidateBundleRefs(b *ConfigBundle, logger *slog.Logger) error {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	var errs []FieldError
+	for name, svc := range b.Services {
+		if _, ok := b.Tenants[svc.Tenant]; !ok {
+			errs = append(errs, FieldError{Field: "services." + name + ".tenant", Reason: "unknown tenant", Value: svc.Tenant})
+		}
+		for chName, pol := range svc.Channels {
+			for _, p := range pol.Providers {
+				if _, ok := b.SMTP[p]; !ok {
+					logger.Warn("service references unknown provider",
+						slog.String("service", name), slog.String("channel", chName), slog.String("provider", p))
+				}
+			}
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("validation error: %w", &ValidationResult{Errors: errs})
+	}
+	return nil
 }
