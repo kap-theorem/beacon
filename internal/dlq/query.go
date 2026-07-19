@@ -66,6 +66,8 @@ func (s *DLQService) QueryFailures(ctx context.Context, filter FailureFilter) ([
 		workflowID string
 		runID      string
 		provider   string
+		service    string
+		tenant     string
 		status     string
 		closedAt   time.Time
 	}
@@ -78,7 +80,16 @@ func (s *DLQService) QueryFailures(ctx context.Context, filter FailureFilter) ([
 			continue
 		}
 
-		provider := parseProviderFromTaskQueue(exec.TaskQueue)
+		tenant := memoString(exec.Memo, "tenant")
+		if filter.Tenant != "" && tenant != filter.Tenant {
+			continue
+		}
+		service := memoString(exec.Memo, "service")
+
+		provider := memoString(exec.Memo, "provider")
+		if provider == "" {
+			provider = parseProviderFromTaskQueue(exec.TaskQueue)
+		}
 		if filter.Provider != "" && provider != filter.Provider {
 			continue
 		}
@@ -87,6 +98,8 @@ func (s *DLQService) QueryFailures(ctx context.Context, filter FailureFilter) ([
 			workflowID: exec.Execution.WorkflowId,
 			runID:      exec.Execution.RunId,
 			provider:   provider,
+			service:    service,
+			tenant:     tenant,
 			status:     status,
 			closedAt:   exec.CloseTime.AsTime(),
 		})
@@ -123,6 +136,8 @@ func (s *DLQService) QueryFailures(ctx context.Context, filter FailureFilter) ([
 			Recipient:     details.recipient,
 			Subject:       details.subject,
 			Provider:      m.provider,
+			Service:       m.service,
+			Tenant:        m.tenant,
 			FailureReason: details.failureReason,
 			RetryCount:    details.retryCount,
 			LastAttemptAt: lastAttemptAt,
@@ -202,8 +217,10 @@ func extractWorkflowDetails(ctx context.Context, tc client.Client, workflowID, r
 }
 
 func parseProviderFromTaskQueue(tq string) string {
-	tq = strings.TrimPrefix(tq, "email-")
 	tq = strings.TrimSuffix(tq, "-queue")
+	if i := strings.Index(tq, "-"); i >= 0 {
+		return tq[i+1:]
+	}
 	return tq
 }
 

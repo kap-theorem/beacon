@@ -9,6 +9,8 @@ type FailedNotification struct {
 	Recipient     string    `json:"recipient"`
 	Subject       string    `json:"subject"`
 	Provider      string    `json:"provider"`
+	Service       string    `json:"service,omitempty"`
+	Tenant        string    `json:"tenant,omitempty"`
 	FailureReason string    `json:"failure_reason"`
 	RetryCount    int32     `json:"retry_count"`
 	LastAttemptAt time.Time `json:"last_attempt_at"`
@@ -20,6 +22,7 @@ type FailedNotification struct {
 type FailureFilter struct {
 	Status   string    // "Failed", "TimedOut", "Canceled", or "" for all three
 	Provider string    // optional; match by task-queue provider name
+	Tenant   string    // "" = unscoped (admin); otherwise only this tenant's workflows
 	FromDate time.Time // inclusive start of close-time window
 	ToDate   time.Time // inclusive end of close-time window
 	Limit    int       // max results (default 20, max 100)

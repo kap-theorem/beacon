@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"beacon/internal/api"
+	"beacon/internal/auth"
 	"beacon/internal/config"
 	"beacon/internal/dlq"
 	"beacon/internal/models"
@@ -69,6 +70,12 @@ const (
 	// in roughly 5s + 10s ~= 15s of backoff; 75s gives generous headroom for a
 	// busy shared dev server.
 	terminalTimeout = 75 * time.Second
+
+	// dlqAdminToken authenticates the DLQ-replay scenario's requests against
+	// the /v1/dlq/* routes, which Task 10 put behind auth.Middleware. Setting
+	// ADMIN_TOKEN to this value lets the test act as an unscoped operator
+	// without needing a full auth.Registry/service bundle.
+	dlqAdminToken = "integration-test-admin-token"
 )
 
 // temporalAddress returns the Temporal host:port, honouring TEMPORAL_ADDRESS.
@@ -219,6 +226,10 @@ func emailServiceForAddr(host string, port int, from, fromName string) notifier.
 
 // newServer stands up an httptest server exposing the real handlers. Any of
 // emailHandler / dlqHandler / adminHandler may be nil to omit that route.
+//
+// The DLQ routes are wired at their production v1 paths behind auth.Middleware
+// (Task 10 made /v1/dlq/* authenticated and tenant-scoped); callers must
+// present dlqAdminToken via ADMIN_TOKEN (see postJSON/getJSON) to reach them.
 func newServer(t *testing.T, emailHandler *api.EmailHandler, dlqHandler *api.DLQHandler, adminHandler *api.AdminHandler) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -226,8 +237,9 @@ func newServer(t *testing.T, emailHandler *api.EmailHandler, dlqHandler *api.DLQ
 		mux.HandleFunc("/notify/email", emailHandler.HandleRequest)
 	}
 	if dlqHandler != nil {
-		mux.HandleFunc("/dlq/failed", dlqHandler.HandleQueryFailures)
-		mux.HandleFunc("/dlq/replay/", dlqHandler.HandleReplay)
+		authMW := auth.Middleware(auth.NewRegistry(nil))
+		mux.Handle("GET /v1/dlq/failed", authMW(http.HandlerFunc(dlqHandler.HandleQueryFailures)))
+		mux.Handle("POST /v1/dlq/replay/{workflowID}", authMW(http.HandlerFunc(dlqHandler.HandleReplay)))
 	}
 	if adminHandler != nil {
 		mux.HandleFunc("/admin/config/refresh", adminHandler.HandleConfigRefresh)
@@ -563,6 +575,7 @@ func TestIntegration_MethodNotAllowed(t *testing.T) {
 
 func TestIntegration_SMTPFailureToDLQToReplay(t *testing.T) {
 	c := dialOrSkip(t)
+	t.Setenv("ADMIN_TOKEN", dlqAdminToken)
 
 	// Healthy mock the replay will eventually use.
 	healthy := testsupport.NewMockSMTPServer(t)
@@ -624,9 +637,9 @@ func TestIntegration_SMTPFailureToDLQToReplay(t *testing.T) {
 	found := false
 	dlqDeadline := time.Now().Add(15 * time.Second)
 	for {
-		st, body := getJSON(t, srv.URL+"/dlq/failed?provider="+provider)
+		st, body := getJSON(t, srv.URL+"/v1/dlq/failed?provider="+provider)
 		if st != http.StatusOK {
-			t.Fatalf("GET /dlq/failed -> %d, body: %s", st, body)
+			t.Fatalf("GET /v1/dlq/failed -> %d, body: %s", st, body)
 		}
 		var parsed struct {
 			Data struct {
@@ -652,13 +665,13 @@ func TestIntegration_SMTPFailureToDLQToReplay(t *testing.T) {
 		time.Sleep(pollInterval)
 	}
 	if !found {
-		t.Fatalf("failed workflow %s did not appear in /dlq/failed within deadline", workflowID)
+		t.Fatalf("failed workflow %s did not appear in /v1/dlq/failed within deadline", workflowID)
 	}
 
 	// Hot-swap the worker's EmailService to the HEALTHY mock, then replay.
 	swap.swap(emailServiceForMock(healthy, from, fromName))
 
-	replayStatus, replayResp := postJSON(t, srv.URL+"/dlq/replay/"+workflowID, nil)
+	replayStatus, replayResp := postJSON(t, srv.URL+"/v1/dlq/replay/"+workflowID, nil)
 	if replayStatus != http.StatusAccepted {
 		t.Fatalf("expected 202 from replay, got %d (resp: %s)", replayStatus, replayResp)
 	}
@@ -685,10 +698,16 @@ func TestIntegration_SMTPFailureToDLQToReplay(t *testing.T) {
 // HTTP helpers
 // -----------------------------------------------------------------------------
 
-// getJSON performs a GET and returns the status code and raw body.
+// getJSON performs an authenticated GET (see dlqAdminToken) and returns the
+// status code and raw body. Currently only exercised against /v1/dlq/* routes.
 func getJSON(t *testing.T, url string) (int, []byte) {
 	t.Helper()
-	resp, err := http.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("build GET %s: %v", url, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+dlqAdminToken)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}
@@ -697,8 +716,9 @@ func getJSON(t *testing.T, url string) (int, []byte) {
 	return resp.StatusCode, body
 }
 
-// postJSON performs a POST with an optional JSON body and returns the status
-// code and raw body.
+// postJSON performs an authenticated POST (see dlqAdminToken) with an
+// optional JSON body and returns the status code and raw body. Currently only
+// exercised against /v1/dlq/* routes.
 func postJSON(t *testing.T, url string, payload any) (int, []byte) {
 	t.Helper()
 	var rdr io.Reader
@@ -709,7 +729,15 @@ func postJSON(t *testing.T, url string, payload any) (int, []byte) {
 		}
 		rdr = bytes.NewReader(b)
 	}
-	resp, err := http.Post(url, "application/json", rdr)
+	req, err := http.NewRequest(http.MethodPost, url, rdr)
+	if err != nil {
+		t.Fatalf("build POST %s: %v", url, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+dlqAdminToken)
+	if rdr != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)
 	}

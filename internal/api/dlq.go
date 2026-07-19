@@ -1,6 +1,7 @@
 package api
 
 import (
+	"beacon/internal/auth"
 	"beacon/internal/dlq"
 	"beacon/utils"
 	"context"
@@ -8,14 +9,13 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 )
 
 // DLQQuerier is the behavior the handler needs; *dlq.DLQService satisfies it.
 type DLQQuerier interface {
 	QueryFailures(ctx context.Context, filter dlq.FailureFilter) ([]*dlq.FailedNotification, error)
-	ReplayWorkflow(ctx context.Context, workflowID string) (*dlq.ReplayResult, error)
+	ReplayWorkflow(ctx context.Context, workflowID, callerTenant string) (*dlq.ReplayResult, error)
 }
 
 // DLQHandler exposes HTTP endpoints for querying and replaying failed email workflows.
@@ -28,18 +28,24 @@ func NewDLQHandler(service DLQQuerier, logger *slog.Logger) *DLQHandler {
 	return &DLQHandler{Service: service, logger: logger}
 }
 
-// HandleQueryFailures handles GET /dlq/failed.
-// Query params: status, provider, from (RFC3339), to (RFC3339), limit, offset.
+// HandleQueryFailures handles GET /v1/dlq/failed.
+// Query params: status, provider, from (RFC3339), to (RFC3339), limit, offset, tenant (admin only).
 func (h *DLQHandler) HandleQueryFailures(w http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodGet {
-		utils.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
 	q := req.URL.Query()
 	filter := dlq.FailureFilter{
 		Status:   q.Get("status"),
 		Provider: q.Get("provider"),
+	}
+
+	ident := auth.FromContext(req.Context())
+	if ident == nil {
+		utils.WriteError(w, http.StatusUnauthorized, "missing API key")
+		return
+	}
+	if ident.Admin {
+		filter.Tenant = q.Get("tenant") // optional narrowing for operators
+	} else {
+		filter.Tenant = ident.Tenant
 	}
 
 	if raw := q.Get("from"); raw != "" {
@@ -82,20 +88,25 @@ func (h *DLQHandler) HandleQueryFailures(w http.ResponseWriter, req *http.Reques
 	})
 }
 
-// HandleReplay handles POST /dlq/replay/{workflowID}.
+// HandleReplay handles POST /v1/dlq/replay/{workflowID}.
 func (h *DLQHandler) HandleReplay(w http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodPost {
-		utils.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	workflowID := strings.TrimPrefix(req.URL.Path, "/dlq/replay/")
+	workflowID := req.PathValue("workflowID")
 	if workflowID == "" {
 		utils.WriteError(w, http.StatusBadRequest, "workflow ID is required")
 		return
 	}
 
-	result, err := h.Service.ReplayWorkflow(req.Context(), workflowID)
+	ident := auth.FromContext(req.Context())
+	if ident == nil {
+		utils.WriteError(w, http.StatusUnauthorized, "missing API key")
+		return
+	}
+	callerTenant := ident.Tenant
+	if ident.Admin {
+		callerTenant = ""
+	}
+
+	result, err := h.Service.ReplayWorkflow(req.Context(), workflowID, callerTenant)
 	if err != nil {
 		if errors.Is(err, dlq.ErrWorkflowNotFound) {
 			utils.WriteError(w, http.StatusNotFound, "workflow not found: "+workflowID)

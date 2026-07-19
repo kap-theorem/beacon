@@ -63,14 +63,14 @@ func BuildServerMux(d ServerDeps) *http.ServeMux {
 
 	if d.DLQService != nil {
 		dh := api.NewDLQHandler(d.DLQService, d.Logger)
-		mux.HandleFunc("/dlq/failed", dh.HandleQueryFailures)
-		mux.HandleFunc("/dlq/replay/", dh.HandleReplay)
+		mux.Handle("GET /v1/dlq/failed", authMW(http.HandlerFunc(dh.HandleQueryFailures)))
+		mux.Handle("POST /v1/dlq/replay/{workflowID}", authMW(http.HandlerFunc(dh.HandleReplay)))
 	} else {
-		unavailable := func(w http.ResponseWriter, r *http.Request) {
+		unavailable := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			utils.WriteError(w, http.StatusServiceUnavailable, "temporal service not available")
-		}
-		mux.HandleFunc("/dlq/failed", unavailable)
-		mux.HandleFunc("/dlq/replay/", unavailable)
+		})
+		mux.Handle("GET /v1/dlq/failed", unavailable)
+		mux.Handle("POST /v1/dlq/replay/{workflowID}", unavailable)
 	}
 	return mux
 }

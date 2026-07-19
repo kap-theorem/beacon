@@ -34,7 +34,7 @@ func (f *fakeDLQ) QueryFailures(_ context.Context, _ dlq.FailureFilter) ([]*dlq.
 	return []*dlq.FailedNotification{}, nil
 }
 
-func (f *fakeDLQ) ReplayWorkflow(_ context.Context, _ string) (*dlq.ReplayResult, error) {
+func (f *fakeDLQ) ReplayWorkflow(_ context.Context, _, _ string) (*dlq.ReplayResult, error) {
 	return &dlq.ReplayResult{}, nil
 }
 
@@ -151,12 +151,12 @@ func TestBuildServerMux_DLQNil_Returns503(t *testing.T) {
 	deps := buildTestDeps(t, nil)
 	mux := BuildServerMux(deps)
 
-	req := httptest.NewRequest(http.MethodGet, "/dlq/failed", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/dlq/failed", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("/dlq/failed with nil DLQ: expected 503, got %d", rec.Code)
+		t.Errorf("/v1/dlq/failed with nil DLQ: expected 503, got %d", rec.Code)
 	}
 }
 
@@ -164,12 +164,44 @@ func TestBuildServerMux_DLQProvided_Returns200(t *testing.T) {
 	deps := buildTestDeps(t, &fakeDLQ{})
 	mux := BuildServerMux(deps)
 
-	req := httptest.NewRequest(http.MethodGet, "/dlq/failed", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/dlq/failed", nil)
+	req.Header.Set("Authorization", "Bearer bk_k1_devsecret") // dev-mode key from buildTestConfigService
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Errorf("/dlq/failed with DLQ: expected 200, got %d", rec.Code)
+		t.Errorf("/v1/dlq/failed with DLQ: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestBuildServerMux_V1DLQFailed_RequiresAuth proves GET /v1/dlq/failed is
+// behind auth.Middleware: an unauthenticated request is rejected before it
+// ever reaches DLQHandler.
+func TestBuildServerMux_V1DLQFailed_RequiresAuth(t *testing.T) {
+	deps := buildTestDeps(t, &fakeDLQ{})
+	mux := BuildServerMux(deps)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/dlq/failed", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("/v1/dlq/failed without auth: expected 401, got %d", rec.Code)
+	}
+}
+
+// TestBuildServerMux_V1DLQReplay_RequiresAuth proves POST
+// /v1/dlq/replay/{workflowID} is behind auth.Middleware.
+func TestBuildServerMux_V1DLQReplay_RequiresAuth(t *testing.T) {
+	deps := buildTestDeps(t, &fakeDLQ{})
+	mux := BuildServerMux(deps)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/dlq/replay/some-id", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("/v1/dlq/replay without auth: expected 401, got %d", rec.Code)
 	}
 }
 
@@ -203,12 +235,12 @@ func TestBuildServerMux_DLQReplay_NilDLQ_Returns503(t *testing.T) {
 	deps := buildTestDeps(t, nil)
 	mux := BuildServerMux(deps)
 
-	req := httptest.NewRequest(http.MethodPost, "/dlq/replay/some-id", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/dlq/replay/some-id", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("/dlq/replay/ with nil DLQ: expected 503, got %d", rec.Code)
+		t.Errorf("/v1/dlq/replay/ with nil DLQ: expected 503, got %d", rec.Code)
 	}
 }
 
