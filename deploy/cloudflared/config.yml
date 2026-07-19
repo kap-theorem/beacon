@@ -1,19 +1,21 @@
 # ---------------------------------------------------------------------------
 # Cloudflare Tunnel configuration for Beacon
 #
-# SECURITY WARNING: Without Cloudflare Access policies configured in the
-# Zero Trust dashboard, the /notify/email endpoint is an open email relay
-# accessible to anyone who can reach the tunnel hostname.  The ingress rules
-# below route /notify/email and /dlq/* to beacon-server, but they do NOT
-# enforce authentication on their own.
+# SECURITY WARNING: the ingress rules below route /v1/notify/email and
+# /v1/dlq/* to beacon-server, but Cloudflare Access policies are not
+# sufficient authentication on their own — they gate access to the tunnel
+# hostname, not to the API.
 #
 # You MUST create a Cloudflare Access "Self-Hosted Application" covering
-# at minimum the /notify/email and /dlq/* paths and require a Service Token
-# (or another suitable identity provider policy) before exposing this tunnel
-# publicly.
+# at minimum the /v1/notify/email and /v1/dlq/* paths and require a Service
+# Token (or another suitable identity provider policy) before exposing this
+# tunnel publicly.
 #
-# Per-service API-key auth at the app layer is planned; until then Cloudflare
-# Access is the only protection for /dlq/* and /notify/*.
+# Per-service API-key auth (Authorization: Bearer / X-API-Key) already exists
+# at the app layer — every /v1/* request is authenticated and policy-checked
+# by beacon-server regardless of Cloudflare Access. Access is defense-in-depth
+# on top of that: it stops unauthenticated traffic at the edge, before it can
+# even reach the app-layer key check.
 # ---------------------------------------------------------------------------
 
 tunnel: <TUNNEL_ID>
@@ -25,15 +27,15 @@ ingress:
     path: /healthz/*
     service: http://beacon-server:6969
 
-  # /notify/email and /dlq/* MUST be protected by a Cloudflare Access
-  # application (service tokens) configured in the Zero Trust dashboard.
-  # Without that policy, /notify/email is an open relay.
+  # /v1/notify/email and /v1/dlq/* MUST be protected by a Cloudflare Access
+  # application (service tokens) configured in the Zero Trust dashboard, as
+  # defense-in-depth in front of beacon-server's own per-service API-key auth.
   - hostname: beacon.example.com
-    path: /notify/email
+    path: /v1/notify/email
     service: http://beacon-server:6969
 
   - hostname: beacon.example.com
-    path: /dlq/*
+    path: /v1/dlq/*
     service: http://beacon-server:6969
 
   # Catch-all: return 404 for any unmatched hostname or path.

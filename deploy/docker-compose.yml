@@ -118,9 +118,10 @@ services:
   #   3. Update deploy/cloudflared/config.yml with your TUNNEL_ID and hostname.
   #   4. See the runbook in docs/ for Access policy configuration.
   #
-  # Without Cloudflare Access policies configured in the Zero Trust dashboard,
-  # the /notify/email endpoint is an open relay to anyone who can reach the
-  # tunnel hostname.  Refer to deploy/cloudflared/config.yml for details.
+  # /v1/notify/email requires a per-service API key at the app layer; Cloudflare
+  # Access policies configured in the Zero Trust dashboard are defense-in-depth
+  # on top of that, not the only protection.  Refer to deploy/cloudflared/config.yml
+  # for details.
   # --------------------------------------------------------------------------
   cloudflared:
     image: cloudflare/cloudflared:latest
