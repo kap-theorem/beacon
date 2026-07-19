@@ -212,7 +212,7 @@ func TestNotify_IdempotencyKeySetsWorkflowID(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("want 202, got %d", rec.Code)
 	}
-	if starter.lastOptions.ID != "email-billing-api-receipt-8812" {
+	if starter.lastOptions.ID != "email:billing-api:receipt-8812" {
 		t.Fatalf("workflow ID: %q", starter.lastOptions.ID)
 	}
 }

@@ -844,6 +844,59 @@ func TestLoadFromInfisical_ServiceUnknownTenant_Rejected(t *testing.T) {
 	}
 }
 
+// TestLoadFromInfisical_DuplicateService_Rejected verifies that two distinct
+// /beacon/services secrets both declaring the same "service" name are rejected,
+// rather than silently last-write-wins overwriting one another in bundle.Services
+// depending on random map iteration order.
+func TestLoadFromInfisical_DuplicateService_Rejected(t *testing.T) {
+	dupServiceJSON := fmt.Sprintf(`{
+  "service": "billing-api",
+  "tenant": "payments",
+  "enabled": true,
+  "keys": [{"id": "k1", "sha256": "%s", "state": "active"}],
+  "channels": {
+    "email": {
+      "providers": ["p1"],
+      "default_provider": "p1",
+      "rate": {"rpm": 60, "daily": 5000}
+    }
+  }
+}`, testHash)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("secretPath") {
+		case "/beacon/providers/email":
+			fmt.Fprint(w, infisicalSecretsResponse(map[string]string{
+				"p1": validProviderJSON("p1"),
+			}))
+		case "/beacon/tenants":
+			fmt.Fprint(w, infisicalSecretsResponse(map[string]string{
+				"payments": `{"tenant":"payments","name":"Payments"}`,
+			}))
+		case "/beacon/services":
+			// Two distinct secrets (different secretKey) both declaring the same
+			// "service": "billing-api" -- must be rejected outright.
+			fmt.Fprint(w, infisicalSecretsResponse(map[string]string{
+				"SERVICE_BILLING_A": dupServiceJSON,
+				"SERVICE_BILLING_B": dupServiceJSON,
+			}))
+		default:
+			fmt.Fprint(w, `{"secrets": []}`)
+		}
+	}))
+	defer srv.Close()
+
+	cs := NewConfigService(srv.URL, "proj", "prod", "key", "", "", testLogger())
+	_, err := cs.loadFromInfisical(context.Background())
+	if err == nil {
+		t.Fatal("expected error for duplicate service declaration, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate service") {
+		t.Errorf("expected error to mention 'duplicate service', got: %v", err)
+	}
+}
+
 // TestRefreshConfig_RevertsOnFailure_NewPaths exercises RefreshConfig's revert-to-previous
 // behaviour through the real three-path loading flow: two successful loads (so a real
 // "previous" bundle exists), then the mock starts serving a malformed /beacon/tenants doc.

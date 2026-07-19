@@ -143,7 +143,7 @@ injected server-side from the calling service's policy configuration (policy-loc
 Optional request header: `Idempotency-Key: <1-128 chars of A-Za-z0-9._->`.
 
 When present, the Temporal workflow ID is derived deterministically as
-`{channel}-{service}-{Idempotency-Key}`. A second request from the same service on the same
+`{channel}:{service}:{Idempotency-Key}`. A second request from the same service on the same
 channel with the same key is detected as a duplicate:
 
 - Returns `202` (not an error) with `data.duplicate: true`.
@@ -159,7 +159,7 @@ Omit the header to always start a fresh workflow with a unique, time-based ID.
   "success": true,
   "message": "notification accepted",
   "data": {
-    "workflow_id": "email-billing-api-1748900000000000000",
+    "workflow_id": "email:billing-api:1748900000000000000",
     "workflow_run_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     "provider": "sendgrid",
     "duplicate": false
@@ -337,7 +337,7 @@ curl -s "http://localhost:6969/v1/dlq/failed?limit=20&offset=20" -H "Authorizati
     "count": 1,
     "failures": [
       {
-        "workflow_id": "email-billing-api-1748900000000000000",
+        "workflow_id": "email:billing-api:1748900000000000000",
         "run_id": "abc123-...",
         "recipient": "alice@example.com",
         "subject": "Your order has shipped",
@@ -420,9 +420,9 @@ tenants. A caller authenticated with `ADMIN_TOKEN` may replay any workflow regar
   "success": true,
   "message": "workflow replay dispatched",
   "data": {
-    "new_workflow_id": "replay-email-billing-api-1748900000000000000",
+    "new_workflow_id": "replay-email:billing-api:1748900000000000000",
     "new_run_id": "def456-...",
-    "original_workflow_id": "email-billing-api-1748900000000000000",
+    "original_workflow_id": "email:billing-api:1748900000000000000",
     "provider": "sendgrid"
   }
 }

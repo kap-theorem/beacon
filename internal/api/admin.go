@@ -5,10 +5,12 @@ import (
 	"beacon/internal/config"
 	"beacon/internal/notifier"
 	"beacon/utils"
+	"crypto/subtle"
 	"errors"
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 )
 
 // AdminHandler exposes privileged config management endpoints.
@@ -37,7 +39,8 @@ func (h *AdminHandler) HandleConfigRefresh(w http.ResponseWriter, req *http.Requ
 		return
 	}
 
-	if req.Header.Get("Authorization") != "Bearer "+adminToken {
+	presented := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
+	if subtle.ConstantTimeCompare([]byte(auth.HashKey(presented)), []byte(auth.HashKey(adminToken))) != 1 {
 		utils.WriteError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}

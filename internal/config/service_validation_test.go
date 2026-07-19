@@ -40,6 +40,7 @@ func TestValidateServiceConfig_Valid(t *testing.T) {
 func TestValidateServiceConfig_Rejections(t *testing.T) {
 	cases := []struct{ name, mutate, wantSubstr string }{
 		{"missing tenant", strings.Replace(validServiceJSON, `"tenant": "payments",`, "", 1), "tenant"},
+		{"bad service name", strings.Replace(validServiceJSON, `"service": "billing-api",`, `"service": "Billing API",`, 1), "service"},
 		{"enabled without keys", strings.Replace(validServiceJSON, `[{"id": "k1", "sha256": "`+testHash+`", "state": "active"}]`, "[]", 1), "keys"},
 		{"default not in allowlist", strings.Replace(validServiceJSON, `"default_provider": "sendgrid"`, `"default_provider": "ses"`, 1), "default_provider"},
 		{"bad sha256", strings.Replace(validServiceJSON, testHash, "nothex", 1), "sha256"},

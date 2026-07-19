@@ -160,6 +160,7 @@ func isValidHost(host string) bool {
 
 var sha256HexRe = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 var keyIDRe = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+var serviceNameRe = regexp.MustCompile("^[a-z0-9][a-z0-9-]{0,63}$")
 
 // ValidateTenantConfig parses and validates one /beacon/tenants secret.
 func ValidateTenantConfig(rawJSON string) (*TenantConfig, error) {
@@ -183,6 +184,8 @@ func ValidateServiceConfig(rawJSON string) (*ServiceConfig, error) {
 	var errs []FieldError
 	if s.Service == "" {
 		errs = append(errs, FieldError{Field: "service", Reason: "required"})
+	} else if !serviceNameRe.MatchString(s.Service) {
+		errs = append(errs, FieldError{Field: "service", Reason: "must match ^[a-z0-9][a-z0-9-]{0,63}$", Value: s.Service})
 	}
 	if s.Tenant == "" {
 		errs = append(errs, FieldError{Field: "tenant", Reason: "required"})

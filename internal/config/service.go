@@ -199,6 +199,9 @@ func (cs *ConfigService) loadFromInfisical(ctx context.Context) (*ConfigBundle, 
 		if valErr != nil {
 			return nil, fmt.Errorf("validation error at %s: %w", path, valErr)
 		}
+		if _, dup := bundle.SMTP[cfg.Name]; dup {
+			return nil, fmt.Errorf("duplicate SMTP provider %q declared by secret %s", cfg.Name, path)
+		}
 		bundle.SMTP[cfg.Name] = cfg
 	}
 
@@ -211,6 +214,9 @@ func (cs *ConfigService) loadFromInfisical(ctx context.Context) (*ConfigBundle, 
 		if valErr != nil {
 			return nil, fmt.Errorf("validation error at %s: %w", path, valErr)
 		}
+		if _, dup := bundle.Tenants[t.Tenant]; dup {
+			return nil, fmt.Errorf("duplicate tenant %q declared by secret %s", t.Tenant, path)
+		}
 		bundle.Tenants[t.Tenant] = t
 	}
 
@@ -222,6 +228,9 @@ func (cs *ConfigService) loadFromInfisical(ctx context.Context) (*ConfigBundle, 
 		s, valErr := ValidateServiceConfig(rawJSON)
 		if valErr != nil {
 			return nil, fmt.Errorf("validation error at %s: %w", path, valErr)
+		}
+		if _, dup := bundle.Services[s.Service]; dup {
+			return nil, fmt.Errorf("duplicate service %q declared by secret %s", s.Service, path)
 		}
 		bundle.Services[s.Service] = s
 	}

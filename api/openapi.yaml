@@ -85,7 +85,7 @@ components:
       description: |
         Optional caller-supplied deduplication key, `^[A-Za-z0-9._-]{1,128}$`.
         When present, the Temporal workflow ID is derived deterministically as
-        `{channel}-{service}-{Idempotency-Key}`. A second request with the
+        `{channel}:{service}:{Idempotency-Key}`. A second request with the
         same key (from the same service, on the same channel) is detected as
         a duplicate: it returns `202` with `duplicate: true`, the **original**
         `workflow_id`, and an empty `workflow_run_id` — no new workflow is
@@ -176,7 +176,7 @@ components:
             Temporal workflow ID for the dispatched execution. On a
             duplicate request (matched `Idempotency-Key`), this is the
             **original** workflow's ID, not a new one.
-          example: "email-billing-api-receipt-8812"
+          example: "email:billing-api:receipt-8812"
         workflow_run_id:
           type: string
           description: Temporal run ID. Empty string on a duplicate response.
@@ -216,7 +216,7 @@ components:
       properties:
         workflow_id:
           type: string
-          example: "email-billing-api-receipt-8812"
+          example: "email:billing-api:receipt-8812"
         run_id:
           type: string
           example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
@@ -275,13 +275,13 @@ components:
       properties:
         new_workflow_id:
           type: string
-          example: "replay-email-billing-api-receipt-8812"
+          example: "replay-email:billing-api:receipt-8812"
         new_run_id:
           type: string
           example: "b2c3d4e5-f6a7-8901-bcde-f12345678901"
         original_workflow_id:
           type: string
-          example: "email-billing-api-receipt-8812"
+          example: "email:billing-api:receipt-8812"
         provider:
           type: string
           example: "sendgrid"
@@ -404,7 +404,7 @@ paths:
                     success: true
                     message: "notification accepted"
                     data:
-                      workflow_id: "email-billing-api-1748900000000000000"
+                      workflow_id: "email:billing-api:1748900000000000000"
                       workflow_run_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
                       provider: "sendgrid"
                       duplicate: false
@@ -413,7 +413,7 @@ paths:
                     success: true
                     message: "duplicate request: notification already accepted"
                     data:
-                      workflow_id: "email-billing-api-receipt-8812"
+                      workflow_id: "email:billing-api:receipt-8812"
                       workflow_run_id: ""
                       provider: "sendgrid"
                       duplicate: true
@@ -666,7 +666,7 @@ paths:
           schema:
             type: string
           description: The Temporal workflow ID of the failed execution to replay.
-          example: "email-billing-api-receipt-8812"
+          example: "email:billing-api:receipt-8812"
       responses:
         "202":
           description: Replay workflow dispatched.
@@ -699,7 +699,7 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
               example:
                 success: false
-                error: "workflow not found: email-billing-api-receipt-8812"
+                error: "workflow not found: email:billing-api:receipt-8812"
         "409":
           description: |
             Workflow is still running (not in a terminal state), or a replay
@@ -712,7 +712,7 @@ paths:
                 still_running:
                   value: { success: false, error: "workflow is still running; replay not allowed" }
                 already_running:
-                  value: { success: false, error: "replay already in progress for workflow: email-billing-api-receipt-8812" }
+                  value: { success: false, error: "replay already in progress for workflow: email:billing-api:receipt-8812" }
         "500":
           description: Replay dispatch failed.
           content:

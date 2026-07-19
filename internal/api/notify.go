@@ -136,7 +136,12 @@ func (h *NotifyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	if idem != "" {
-		opts.ID = fmt.Sprintf("%s-%s-%s", ch.Name(), ident.Service, idem)
+		// Colon-joined: channel names, validated service names, and
+		// idempotency keys can never contain ':', so this ordering is
+		// unambiguous — unlike a hyphen join, where e.g. service "billing"
+		// with key "eu-x1" and service "billing-eu" with key "x1" would
+		// collide on the same ID.
+		opts.ID = fmt.Sprintf("%s:%s:%s", ch.Name(), ident.Service, idem)
 		opts.WorkflowIDReusePolicy = enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE
 		// Without this, the Temporal Go SDK swallows the server's
 		// WorkflowExecutionAlreadyStarted error on ID reuse and returns the
@@ -146,7 +151,7 @@ func (h *NotifyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		// fire and every duplicate would silently look like a fresh accept.
 		opts.WorkflowExecutionErrorWhenAlreadyStarted = true
 	} else {
-		opts.ID = fmt.Sprintf("%s-%s-%d", ch.Name(), ident.Service, h.now().UnixNano())
+		opts.ID = fmt.Sprintf("%s:%s:%d", ch.Name(), ident.Service, h.now().UnixNano())
 	}
 
 	we, err := h.TemporalClient.ExecuteWorkflow(r.Context(), opts, ch.WorkflowName(), n)
