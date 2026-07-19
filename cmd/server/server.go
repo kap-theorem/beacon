@@ -12,6 +12,7 @@ import (
 	"beacon/utils"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -95,8 +96,21 @@ func main() {
 		dlqSvc = dlq.NewDLQService(temporalClient, namespace, logger)
 	}
 
-	healthChecker := confpkg.NewHealthChecker()
-	healthChecker.SetReady(true)
+	healthChecker := confpkg.NewHealthChecker(
+		confpkg.ReadinessCheck{Name: "config", Fn: func(ctx context.Context) error {
+			if confpkg.GetConfigService().GetConfig() == nil {
+				return fmt.Errorf("config not loaded")
+			}
+			return nil
+		}},
+		confpkg.ReadinessCheck{Name: "temporal", Fn: func(ctx context.Context) error {
+			if temporalClient == nil {
+				return fmt.Errorf("temporal client unavailable")
+			}
+			_, err := temporalClient.CheckHealth(ctx, &client.CheckHealthRequest{})
+			return err
+		}},
+	)
 
 	mux := app.BuildServerMux(app.ServerDeps{
 		TemporalClient: temporalClient,

@@ -85,7 +85,6 @@ func buildTestRegistry(t *testing.T) *notifier.EmailClientRegistry {
 func buildTestDeps(t *testing.T, dlqSvc api.DLQQuerier) ServerDeps {
 	t.Helper()
 	health := config.NewHealthChecker()
-	health.SetReady(true)
 	cs := buildTestConfigService(t)
 	bundle := cs.GetConfig()
 	return ServerDeps{
