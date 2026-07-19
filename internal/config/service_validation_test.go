@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -44,6 +45,9 @@ func TestValidateServiceConfig_Rejections(t *testing.T) {
 		{"bad sha256", strings.Replace(validServiceJSON, testHash, "nothex", 1), "sha256"},
 		{"bad from address", strings.Replace(validServiceJSON, "billing@corp.com", "not-an-address", 1), "from.address"},
 		{"zero rpm", strings.Replace(validServiceJSON, `"rpm": 60`, `"rpm": 0`, 1), "rate.rpm"},
+		{"bad key id", strings.Replace(validServiceJSON, `"id": "k1"`, `"id": "K1!"`, 1), "keys[0].id"},
+		{"unknown channel", strings.Replace(validServiceJSON, `"email": {`, `"sms": {`, 1), "unknown channel"},
+		{"zero daily", strings.Replace(validServiceJSON, `"daily": 5000`, `"daily": 0`, 1), "rate.daily"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -70,4 +74,80 @@ func TestValidateConfig_RejectsOAuth2(t *testing.T) {
 	if _, err := ValidateConfig(raw); err == nil {
 		t.Fatal("OAUTH2 must be rejected at validation until implemented")
 	}
+}
+
+func TestValidateBundleRefs(t *testing.T) {
+	t.Run("happy path", func(t *testing.T) {
+		b := &ConfigBundle{
+			Tenants: map[string]*TenantConfig{"payments": {Tenant: "payments"}},
+			SMTP:    map[string]*SMTPClientConfig{"sendgrid": {Name: "sendgrid"}},
+			Services: map[string]*ServiceConfig{
+				"billing-api": {
+					Service: "billing-api",
+					Tenant:  "payments",
+					Channels: map[string]*ChannelPolicy{
+						"email": {Providers: []string{"sendgrid"}, DefaultProvider: "sendgrid"},
+					},
+				},
+			},
+		}
+		if err := ValidateBundleRefs(b, slog.Default()); err != nil {
+			t.Fatalf("expected nil error, got: %v", err)
+		}
+	})
+
+	t.Run("two unknown tenants aggregated", func(t *testing.T) {
+		b := &ConfigBundle{
+			Tenants: map[string]*TenantConfig{},
+			Services: map[string]*ServiceConfig{
+				"svc-a": {Service: "svc-a", Tenant: "ghost-a"},
+				"svc-b": {Service: "svc-b", Tenant: "ghost-b"},
+			},
+		}
+		err := ValidateBundleRefs(b, slog.Default())
+		if err == nil {
+			t.Fatal("expected error for unknown tenants")
+		}
+		if !strings.Contains(err.Error(), "svc-a") || !strings.Contains(err.Error(), "svc-b") {
+			t.Fatalf("expected error to mention both service names, got: %v", err)
+		}
+	})
+
+	t.Run("unknown provider is warn-only", func(t *testing.T) {
+		b := &ConfigBundle{
+			Tenants: map[string]*TenantConfig{"payments": {Tenant: "payments"}},
+			SMTP:    map[string]*SMTPClientConfig{},
+			Services: map[string]*ServiceConfig{
+				"billing-api": {
+					Service: "billing-api",
+					Tenant:  "payments",
+					Channels: map[string]*ChannelPolicy{
+						"email": {Providers: []string{"unknown-provider"}, DefaultProvider: "unknown-provider"},
+					},
+				},
+			},
+		}
+		if err := ValidateBundleRefs(b, slog.Default()); err != nil {
+			t.Fatalf("expected nil error (warn-only), got: %v", err)
+		}
+	})
+
+	t.Run("nil logger with unknown provider does not panic", func(t *testing.T) {
+		b := &ConfigBundle{
+			Tenants: map[string]*TenantConfig{"payments": {Tenant: "payments"}},
+			SMTP:    map[string]*SMTPClientConfig{},
+			Services: map[string]*ServiceConfig{
+				"billing-api": {
+					Service: "billing-api",
+					Tenant:  "payments",
+					Channels: map[string]*ChannelPolicy{
+						"email": {Providers: []string{"unknown-provider"}, DefaultProvider: "unknown-provider"},
+					},
+				},
+			},
+		}
+		if err := ValidateBundleRefs(b, nil); err != nil {
+			t.Fatalf("expected nil error, got: %v", err)
+		}
+	})
 }

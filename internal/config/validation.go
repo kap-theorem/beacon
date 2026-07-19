@@ -112,7 +112,7 @@ func validateSemantic(cfg *SMTPClientConfig) *ValidationResult {
 	if cfg.Username == "" {
 		errors = append(errors, FieldError{
 			Field:  "username",
-			Reason: "required for non-OAuth2 auth",
+			Reason: "required",
 		})
 	}
 
@@ -236,9 +236,13 @@ func ValidateServiceConfig(rawJSON string) (*ServiceConfig, error) {
 // unknown tenant -> reject; unknown provider in an allowlist -> warn only
 // (providers hot-reload separately; requests bound to a missing provider 503).
 func ValidateBundleRefs(b *ConfigBundle, logger *slog.Logger) error {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	var errs []FieldError
 	for name, svc := range b.Services {
 		if _, ok := b.Tenants[svc.Tenant]; !ok {
-			return fmt.Errorf("service %q references unknown tenant %q", name, svc.Tenant)
+			errs = append(errs, FieldError{Field: "services." + name + ".tenant", Reason: "unknown tenant", Value: svc.Tenant})
 		}
 		for chName, pol := range svc.Channels {
 			for _, p := range pol.Providers {
@@ -248,6 +252,9 @@ func ValidateBundleRefs(b *ConfigBundle, logger *slog.Logger) error {
 				}
 			}
 		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("validation error: %w", &ValidationResult{Errors: errs})
 	}
 	return nil
 }
