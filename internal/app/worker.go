@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"strings"
 
 	"beacon/internal/config"
 )
@@ -26,4 +27,15 @@ func ResolveWorkerProvider(bundle *config.ConfigBundle, providerName string) (st
 		return "", nil, fmt.Errorf("no provider resolved; set PROVIDER_NAME or mark one provider is_default")
 	}
 	return name, bundle.SMTP[name], nil
+}
+
+// ParseWorkerSpec splits a systemd instance name "<channel>-<provider>"
+// (e.g. "email-mailgun-payments") into channel and provider. The channel is
+// the segment before the first dash; the provider may itself contain dashes.
+func ParseWorkerSpec(spec string) (channelName, provider string, err error) {
+	before, after, found := strings.Cut(spec, "-")
+	if !found || before == "" || after == "" {
+		return "", "", fmt.Errorf("worker spec %q must be <channel>-<provider>", spec)
+	}
+	return before, after, nil
 }

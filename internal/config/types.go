@@ -29,7 +29,6 @@ type SMTPClientConfig struct {
 	AuthType    AuthType      `json:"auth_type"`
 	TLS         TLSConfig     `json:"tls"`
 	Timeout     time.Duration `json:"timeout"`
-	Categories  []string      `json:"categories,omitempty"`
 	IsDefault   bool          `json:"is_default,omitempty"`
 	FromAddress string        `json:"from_address,omitempty"`
 	FromName    string        `json:"from_name,omitempty"`

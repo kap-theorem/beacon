@@ -92,8 +92,8 @@ services:
   #
   # To add a second provider (e.g. mailgun), duplicate this service block and
   # change the service name to beacon-worker-mailgun and set
-  # PROVIDER_NAME=mailgun.  Each worker polls the same Temporal task queue but
-  # routes delivery through the named provider's SMTP config loaded from
+  # WORKER_SPEC=email-mailgun.  Each worker polls the same Temporal task queue
+  # but routes delivery through the named provider's SMTP config loaded from
   # Infisical.
   # --------------------------------------------------------------------------
   beacon-worker-sendgrid:
@@ -102,7 +102,7 @@ services:
     env_file:
       - ./env/worker.env
     environment:
-      PROVIDER_NAME: sendgrid
+      WORKER_SPEC: email-sendgrid
       TEMPORAL_ADDRESS: temporal:7233
     depends_on:
       - temporal

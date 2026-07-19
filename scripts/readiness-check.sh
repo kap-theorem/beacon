@@ -16,6 +16,9 @@ set -euo pipefail
 
 BASE_URL="${1:-http://127.0.0.1:6969}"
 ADMIN_TOKEN="${ADMIN_TOKEN:-devsecret}"
+# Service API key for the authenticated /v1 surface (notify + dlq). Defaults
+# to the mock-infisical / DEV_API_KEY test fixture key used by test-local.sh.
+API_KEY="${API_KEY:-bk_k1_local-test-key}"
 PASS=0
 FAIL=0
 
@@ -43,7 +46,7 @@ run_check() {
   local http_body
   local http_status
   http_body=$(curl -s -o /tmp/readiness_body.tmp -w "%{http_code}" \
-    -X "${method}" "${BASE_URL}${path}" "${extra_args[@]}" 2>&1)
+    -X "${method}" "${BASE_URL}${path}" "${extra_args[@]+"${extra_args[@]}"}" 2>&1)
   http_status="${http_body}"
   http_body=$(cat /tmp/readiness_body.tmp 2>/dev/null || echo "")
 
@@ -72,12 +75,13 @@ run_check "GET /healthz/ready — expect 200" \
 # Email notification
 # ---------------------------------------------------------------------------
 print_separator
-echo "CHECK: POST /notify/email (valid) — expect 202"
-echo "  POST ${BASE_URL}/notify/email"
+echo "CHECK: POST /v1/notify/email (valid) — expect 202"
+echo "  POST ${BASE_URL}/v1/notify/email"
 
 NOTIFY_STATUS=$(curl -s -o /tmp/readiness_notify.tmp -w "%{http_code}" \
-  -X POST "${BASE_URL}/notify/email" \
+  -X POST "${BASE_URL}/v1/notify/email" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${API_KEY}" \
   -d '{"to":"alice@example.com","subject":"Readiness check","body":"hello from beacon"}')
 NOTIFY_BODY=$(cat /tmp/readiness_notify.tmp)
 
@@ -94,18 +98,25 @@ else
   FAIL=$((FAIL + 1))
 fi
 
-run_check "POST /notify/email (invalid email) — expect 400" \
-  POST /notify/email "400" \
+run_check "POST /v1/notify/email (invalid email) — expect 400" \
+  POST /v1/notify/email "400" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${API_KEY}" \
   -d '{"to":"not-an-email","subject":"x","body":"y"}'
 
-run_check "POST /notify/email (missing subject) — expect 400" \
-  POST /notify/email "400" \
+run_check "POST /v1/notify/email (missing subject) — expect 400" \
+  POST /v1/notify/email "400" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${API_KEY}" \
   -d '{"to":"a@b.com","body":"y"}'
 
-run_check "GET /notify/email — expect 405 (method not allowed)" \
-  GET /notify/email "405"
+run_check "GET /v1/notify/email — expect 405 (method not allowed)" \
+  GET /v1/notify/email "405"
+
+run_check "POST /v1/notify/email (no API key) — expect 401" \
+  POST /v1/notify/email "401" \
+  -H "Content-Type: application/json" \
+  -d '{"to":"a@b.com","subject":"x","body":"y"}'
 
 # ---------------------------------------------------------------------------
 # Admin endpoints
@@ -121,14 +132,20 @@ run_check "POST /admin/config/refresh (Bearer devsecret, DEV_MODE) — expect 50
 # ---------------------------------------------------------------------------
 # DLQ endpoints
 # ---------------------------------------------------------------------------
-run_check "GET /dlq/failed — expect 200 with count" \
-  GET /dlq/failed "200"
+run_check "GET /v1/dlq/failed — expect 200 with count" \
+  GET /v1/dlq/failed "200" \
+  -H "Authorization: Bearer ${API_KEY}"
 
-run_check "GET /dlq/failed?from=bad-date — expect 400" \
-  GET "/dlq/failed?from=bad-date" "400"
+run_check "GET /v1/dlq/failed?from=bad-date — expect 400" \
+  GET "/v1/dlq/failed?from=bad-date" "400" \
+  -H "Authorization: Bearer ${API_KEY}"
 
-run_check "POST /dlq/replay/nonexistent-workflow-id — expect 404" \
-  POST /dlq/replay/nonexistent-workflow-id "404"
+run_check "POST /v1/dlq/replay/nonexistent-workflow-id — expect 404" \
+  POST /v1/dlq/replay/nonexistent-workflow-id "404" \
+  -H "Authorization: Bearer ${API_KEY}"
+
+run_check "GET /v1/dlq/failed (no API key) — expect 401" \
+  GET /v1/dlq/failed "401"
 
 # ---------------------------------------------------------------------------
 # Summary

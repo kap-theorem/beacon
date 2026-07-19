@@ -36,18 +36,38 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Determine which provider this worker instance serves.
-	// Set PROVIDER_NAME to the key in the SMTP config map (e.g. "mailgun-payments").
-	// If unset, the default provider (is_default: true) is used; if only one provider
-	// exists it is automatically the default.
+	// Determine which channel + provider this worker instance serves.
+	// Preferred: set WORKER_SPEC to "<channel>-<provider>" (e.g. "email-sendgrid"),
+	// as used by the systemd template unit's %i instance name. Alternatively set
+	// CHANNEL and PROVIDER_NAME separately. If PROVIDER_NAME is unset, the default
+	// provider (is_default: true) is used; if only one provider exists it is
+	// automatically the default.
+	channelName := os.Getenv("CHANNEL")
+	if channelName == "" {
+		channelName = "email"
+	}
+	providerName := os.Getenv("PROVIDER_NAME")
+	if spec := os.Getenv("WORKER_SPEC"); spec != "" {
+		var specErr error
+		channelName, providerName, specErr = app.ParseWorkerSpec(spec)
+		if specErr != nil {
+			logger.Error("invalid WORKER_SPEC", slog.Any("error", specErr))
+			os.Exit(1)
+		}
+	}
+	if channelName != "email" {
+		logger.Error("this worker binary only implements the email channel", slog.String("channel", channelName))
+		os.Exit(1)
+	}
+
 	bundle := confpkg.GetConfigService().GetConfig()
-	providerName, smtpCfg, err := app.ResolveWorkerProvider(bundle, os.Getenv("PROVIDER_NAME"))
+	providerName, smtpCfg, err := app.ResolveWorkerProvider(bundle, providerName)
 	if err != nil {
 		logger.Error("resolve worker provider", slog.Any("error", err))
 		os.Exit(1)
 	}
 
-	taskQueue := channel.TaskQueue("email", providerName)
+	taskQueue := channel.TaskQueue(channelName, providerName)
 
 	// EmailSender is hot-swapped by the ConfigWatcher via an atomic pointer.
 	var emailSender atomic.Pointer[notifier.EmailSender]
