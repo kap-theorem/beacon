@@ -198,14 +198,18 @@ func TestValidateConfig_ValidConfig(t *testing.T) {
 	}
 }
 
-func TestValidateConfig_OAUTH2NoUsernameRequired(t *testing.T) {
+func TestValidateConfig_OAUTH2Rejected(t *testing.T) {
+	// OAUTH2 is accepted by the JSON schema but not implemented by any
+	// sender, so validation must reject it outright (even with a username
+	// and password present) until OAuth2 support lands.
 	base := validBaseJSON()
 	j := patchJSON(base, "auth_type", "OAUTH2")
-	j = patchJSON(j, "username", nil)
-	// OAuth2 still requires a password; keep password in base.
 	_, err := ValidateConfig(j)
-	if err != nil {
-		t.Fatalf("OAUTH2 without username should be valid, got: %v", err)
+	if err == nil {
+		t.Fatal("OAUTH2 must be rejected at validation until implemented")
+	}
+	if !strings.Contains(err.Error(), "auth_type") {
+		t.Errorf("expected error to mention 'auth_type', got: %v", err)
 	}
 }
 
