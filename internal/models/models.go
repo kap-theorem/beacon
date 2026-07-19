@@ -2,15 +2,6 @@ package models
 
 import "time"
 
-// EmailMessage is the legacy /notify/email request payload.
-// Deprecated: replaced by Notification; deleted at cutover.
-type EmailMessage struct {
-	To         string `json:"to"`
-	Subject    string `json:"subject"`
-	Body       string `json:"body"`
-	ClientHint string `json:"client_hint,omitempty"`
-}
-
 // EmailPayload is the email-channel payload inside a Notification.
 // From* fields are set server-side from service policy — never from the request.
 type EmailPayload struct {

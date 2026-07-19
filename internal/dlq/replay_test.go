@@ -6,8 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"beacon/internal/models"
-	"beacon/internal/notifier"
+	"beacon/internal/channel"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -116,14 +115,14 @@ func TestReplay_TerminalFailed_Success(t *testing.T) {
 	mc.On("DescribeWorkflowExecution", ctx, origWFID, "").
 		Return(describeResp(enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, "email-sendgrid-queue", origWFID, origRunID), nil)
 
-	msg := &models.EmailMessage{To: "r@example.com", Subject: "sub", Body: "body"}
+	msg := &legacyEmailMessage{To: "r@example.com", Subject: "sub", Body: "body"}
 	payloads := mustPayloads(t, msg)
 	events := []*historypb.HistoryEvent{makeStartedEvent(payloads)}
 	iter := buildHistoryIter(events)
 	mc.On("GetWorkflowHistory", ctx, origWFID, origRunID, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
 
 	expectedNewID := "replay-" + origWFID
-	expectedQueue := notifier.TaskQueueFor("sendgrid")
+	expectedQueue := channel.TaskQueue("email", "sendgrid")
 
 	wfRun := &mocks.WorkflowRun{}
 	wfRun.On("GetID").Return(expectedNewID)
@@ -159,7 +158,7 @@ func TestReplay_TerminalTimedOut_Success(t *testing.T) {
 	mc.On("DescribeWorkflowExecution", ctx, origWFID, "").
 		Return(describeResp(enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT, "email-mailgun-queue", origWFID, origRunID), nil)
 
-	msg := &models.EmailMessage{To: "t@example.com", Subject: "timed"}
+	msg := &legacyEmailMessage{To: "t@example.com", Subject: "timed"}
 	payloads := mustPayloads(t, msg)
 	events := []*historypb.HistoryEvent{makeStartedEvent(payloads)}
 	iter := buildHistoryIter(events)
@@ -189,7 +188,7 @@ func TestReplay_TerminalCanceled_Success(t *testing.T) {
 	mc.On("DescribeWorkflowExecution", ctx, origWFID, "").
 		Return(describeResp(enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED, "email-smtp-queue", origWFID, origRunID), nil)
 
-	msg := &models.EmailMessage{To: "c@example.com", Subject: "can"}
+	msg := &legacyEmailMessage{To: "c@example.com", Subject: "can"}
 	payloads := mustPayloads(t, msg)
 	events := []*historypb.HistoryEvent{makeStartedEvent(payloads)}
 	iter := buildHistoryIter(events)
@@ -221,7 +220,7 @@ func TestReplay_AlreadyStarted(t *testing.T) {
 	mc.On("DescribeWorkflowExecution", ctx, origWFID, "").
 		Return(describeResp(enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, "email-sendgrid-queue", origWFID, origRunID), nil)
 
-	msg := &models.EmailMessage{To: "d@example.com", Subject: "dup"}
+	msg := &legacyEmailMessage{To: "d@example.com", Subject: "dup"}
 	payloads := mustPayloads(t, msg)
 	events := []*historypb.HistoryEvent{makeStartedEvent(payloads)}
 	iter := buildHistoryIter(events)
@@ -253,7 +252,7 @@ func TestReplay_ExecuteWorkflowError(t *testing.T) {
 	mc.On("DescribeWorkflowExecution", ctx, origWFID, "").
 		Return(describeResp(enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, "email-sendgrid-queue", origWFID, origRunID), nil)
 
-	msg := &models.EmailMessage{To: "e@example.com", Subject: "exec-err"}
+	msg := &legacyEmailMessage{To: "e@example.com", Subject: "exec-err"}
 	payloads := mustPayloads(t, msg)
 	events := []*historypb.HistoryEvent{makeStartedEvent(payloads)}
 	iter := buildHistoryIter(events)
@@ -281,7 +280,7 @@ func TestReplay_HistoryWithActivityFailure(t *testing.T) {
 	mc.On("DescribeWorkflowExecution", ctx, origWFID, "").
 		Return(describeResp(enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, "email-sendgrid-queue", origWFID, origRunID), nil)
 
-	msg := &models.EmailMessage{To: "af@example.com", Subject: "activity fail"}
+	msg := &legacyEmailMessage{To: "af@example.com", Subject: "activity fail"}
 	payloads := mustPayloads(t, msg)
 	events := []*historypb.HistoryEvent{
 		makeStartedEvent(payloads),
@@ -324,7 +323,7 @@ func TestDLQService_ReplayWorkflow_IntegrationPath(t *testing.T) {
 	mc.On("DescribeWorkflowExecution", ctx, origWFID, "").
 		Return(describeResp(enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, "email-sendgrid-queue", origWFID, origRunID), nil)
 
-	msg := &models.EmailMessage{To: "svc@example.com", Subject: "svc test"}
+	msg := &legacyEmailMessage{To: "svc@example.com", Subject: "svc test"}
 	payloads := mustPayloads(t, msg)
 	events := []*historypb.HistoryEvent{makeStartedEvent(payloads)}
 	iter := buildHistoryIter(events)
@@ -379,7 +378,7 @@ func TestReplay_TenantMatch_Proceeds(t *testing.T) {
 	mc.On("DescribeWorkflowExecution", ctx, origWFID, "").
 		Return(describeRespWithMemo(enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, "email-sendgrid-queue", origWFID, origRunID, memo), nil)
 
-	msg := &models.EmailMessage{To: "tenant@example.com", Subject: "tenant match"}
+	msg := &legacyEmailMessage{To: "tenant@example.com", Subject: "tenant match"}
 	payloads := mustPayloads(t, msg)
 	iter := buildHistoryIter([]*historypb.HistoryEvent{makeStartedEvent(payloads)})
 	mc.On("GetWorkflowHistory", ctx, origWFID, origRunID, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
@@ -416,7 +415,7 @@ func TestReplay_OfReplay_PrefixesAgain(t *testing.T) {
 	mc.On("DescribeWorkflowExecution", ctx, origWFID, "").
 		Return(describeRespWithMemo(enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, "email-sendgrid-queue", origWFID, origRunID, memo), nil)
 
-	msg := &models.EmailMessage{To: "replay2@example.com", Subject: "replay of replay"}
+	msg := &legacyEmailMessage{To: "replay2@example.com", Subject: "replay of replay"}
 	payloads := mustPayloads(t, msg)
 	iter := buildHistoryIter([]*historypb.HistoryEvent{makeStartedEvent(payloads)})
 	mc.On("GetWorkflowHistory", ctx, origWFID, origRunID, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
@@ -454,7 +453,7 @@ func TestReplay_AdminUnscoped_ProceedsRegardlessOfTenant(t *testing.T) {
 	mc.On("DescribeWorkflowExecution", ctx, origWFID, "").
 		Return(describeRespWithMemo(enumspb.WORKFLOW_EXECUTION_STATUS_FAILED, "email-sendgrid-queue", origWFID, origRunID, memo), nil)
 
-	msg := &models.EmailMessage{To: "admin@example.com", Subject: "admin view"}
+	msg := &legacyEmailMessage{To: "admin@example.com", Subject: "admin view"}
 	payloads := mustPayloads(t, msg)
 	iter := buildHistoryIter([]*historypb.HistoryEvent{makeStartedEvent(payloads)})
 	mc.On("GetWorkflowHistory", ctx, origWFID, origRunID, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)

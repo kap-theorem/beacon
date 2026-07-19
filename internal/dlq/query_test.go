@@ -29,7 +29,17 @@ func noopLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(nil, &slog.HandlerOptions{Level: slog.LevelError + 100}))
 }
 
-func mustPayloads(t *testing.T, msg *models.EmailMessage) *commonpb.Payloads {
+// legacyEmailMessage mirrors the pre-cutover /notify/email request shape
+// (models.EmailMessage, deleted in Task 12's v1 cutover) so history-decode
+// tests can still exercise Notification.Normalize() against legacy-shaped
+// workflow inputs recorded by pre-cutover workflows.
+type legacyEmailMessage struct {
+	To      string `json:"to"`
+	Subject string `json:"subject"`
+	Body    string `json:"body"`
+}
+
+func mustPayloads(t *testing.T, msg *legacyEmailMessage) *commonpb.Payloads {
 	t.Helper()
 	p, err := converter.GetDefaultDataConverter().ToPayloads(msg)
 	require.NoError(t, err)
@@ -189,7 +199,7 @@ func TestStatusMatches_SpecificFilter(t *testing.T) {
 func TestExtractWorkflowDetails_StartedAndFailed(t *testing.T) {
 	mc := &mocks.Client{}
 	ctx := context.Background()
-	msg := &models.EmailMessage{To: "user@example.com", Subject: "Hello", Body: "World"}
+	msg := &legacyEmailMessage{To: "user@example.com", Subject: "Hello", Body: "World"}
 	payloads := mustPayloads(t, msg)
 	failTime := time.Now().Add(-5 * time.Minute)
 
@@ -215,7 +225,7 @@ func TestExtractWorkflowDetails_StartedAndFailed(t *testing.T) {
 func TestExtractWorkflowDetails_MultipleActivityFailures(t *testing.T) {
 	mc := &mocks.Client{}
 	ctx := context.Background()
-	msg := &models.EmailMessage{To: "a@b.com", Subject: "Test"}
+	msg := &legacyEmailMessage{To: "a@b.com", Subject: "Test"}
 	payloads := mustPayloads(t, msg)
 	t1 := time.Now().Add(-10 * time.Minute)
 	t2 := time.Now().Add(-5 * time.Minute)
@@ -506,7 +516,7 @@ func TestQueryFailedWorkflows_NegativeOffsetClampedToZero(t *testing.T) {
 	resp := makeListResp(executions...)
 	mc.On("ListClosedWorkflow", ctx, mock.Anything).Return(resp, nil)
 
-	msg := &models.EmailMessage{To: "user@example.com", Subject: "Hello", Body: "World"}
+	msg := &legacyEmailMessage{To: "user@example.com", Subject: "Hello", Body: "World"}
 	iter := buildHistoryIter([]*historypb.HistoryEvent{makeStartedEvent(mustPayloads(t, msg))})
 	mc.On("GetWorkflowHistory", ctx, "wf1", "run1", false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT).Return(iter)
 
@@ -575,7 +585,7 @@ func TestQueryFailedWorkflows_WithLastAttemptAt(t *testing.T) {
 	resp := makeListResp(executions...)
 	mc.On("ListClosedWorkflow", ctx, mock.Anything).Return(resp, nil)
 
-	msg := &models.EmailMessage{To: "x@y.com", Subject: "sub"}
+	msg := &legacyEmailMessage{To: "x@y.com", Subject: "sub"}
 	payloads := mustPayloads(t, msg)
 	events := []*historypb.HistoryEvent{
 		makeStartedEvent(payloads),

@@ -2,6 +2,7 @@ package main
 
 import (
 	"beacon/internal/app"
+	"beacon/internal/channel"
 	confpkg "beacon/internal/config"
 	"beacon/internal/notifier"
 	"beacon/internal/temporal"
@@ -46,7 +47,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	taskQueue := notifier.TaskQueueFor(providerName)
+	taskQueue := channel.TaskQueue("email", providerName)
 
 	// EmailSender is hot-swapped by the ConfigWatcher via an atomic pointer.
 	var emailSender atomic.Pointer[notifier.EmailSender]

@@ -42,17 +42,11 @@ func main() {
 	}
 
 	bundle := confpkg.GetConfigService().GetConfig()
-	registry, err := notifier.NewEmailClientRegistry(bundle)
-	if err != nil {
-		logger.Error("failed to build email client registry", slog.Any("error", err))
-		os.Exit(1)
-	}
-	logger.Info("email client registry ready", slog.Any("providers", registry.ProviderNames()))
-
 	authRegistry := auth.NewRegistry(bundle)
 	providerRegistry := notifier.NewProviderRegistry(bundle)
 	channels := channel.NewRegistry()
 	limiter := policy.NewMemoryLimiter(nil)
+	logger.Info("provider registry ready", slog.Any("providers", providerRegistry.Names("email")))
 
 	// Long-lived context — cancelled on SIGTERM/SIGINT to stop background
 	// goroutines and trigger graceful HTTP server shutdown.
@@ -62,14 +56,8 @@ func main() {
 	// ConfigWatcher: poll interval defaults to 300 s, overridden by CONFIG_POLL_INTERVAL (seconds).
 	pollInterval := app.ParsePollInterval(os.Getenv("CONFIG_POLL_INTERVAL"), 300*time.Second)
 	watcher := confpkg.NewConfigWatcher(confpkg.GetConfigService(), pollInterval, func(b *confpkg.ConfigBundle) {
-		// Reload order: provider/auth registries first, legacy last; a legacy
-		// failure (empty SMTP) leaves registries momentarily divergent until
-		// the next successful poll — acceptable until legacy is removed (Task 12).
 		providerRegistry.Reload(b)
 		authRegistry.Reload(b)
-		if reloadErr := registry.Reload(b); reloadErr != nil {
-			logger.Error("registry reload failed", slog.Any("error", reloadErr))
-		}
 	}, logger)
 	go watcher.Start(ctx)
 
@@ -114,7 +102,6 @@ func main() {
 
 	mux := app.BuildServerMux(app.ServerDeps{
 		TemporalClient: temporalClient,
-		LegacyRegistry: registry,
 		Channels:       channels,
 		Providers:      providerRegistry,
 		AuthRegistry:   authRegistry,

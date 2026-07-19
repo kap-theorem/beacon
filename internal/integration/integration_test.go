@@ -39,10 +39,11 @@ import (
 
 	"beacon/internal/api"
 	"beacon/internal/auth"
+	"beacon/internal/channel"
 	"beacon/internal/config"
 	"beacon/internal/dlq"
-	"beacon/internal/models"
 	"beacon/internal/notifier"
+	"beacon/internal/policy"
 	"beacon/internal/temporal"
 	"beacon/internal/testsupport"
 
@@ -76,6 +77,12 @@ const (
 	// ADMIN_TOKEN to this value lets the test act as an unscoped operator
 	// without needing a full auth.Registry/service bundle.
 	dlqAdminToken = "integration-test-admin-token"
+
+	// testAPIKey authenticates the notify scenarios' requests against the
+	// authenticated /v1/notify/{channel} route. Task 12 removed the
+	// unauthenticated /notify/email route, so these tests now present a real
+	// API key (see newBundle) exactly like production traffic.
+	testAPIKey = "bk_it1_integrationtestsecret"
 )
 
 // temporalAddress returns the Temporal host:port, honouring TEMPORAL_ADDRESS.
@@ -123,7 +130,7 @@ func uniqueSuffix() string {
 
 // providerNameFor builds a deterministic-yet-unique provider name from the
 // running test and a random suffix. The result is also embedded into the
-// Temporal task queue via notifier.TaskQueueFor.
+// Temporal task queue via channel.TaskQueue.
 func providerNameFor(t *testing.T, label string) string {
 	t.Helper()
 	base := strings.ToLower(t.Name())
@@ -133,18 +140,24 @@ func providerNameFor(t *testing.T, label string) string {
 
 // smtpProvider describes one mock SMTP backend and its routing config.
 type smtpProvider struct {
-	name       string
-	host       string
-	port       int
-	from       string
-	fromName   string
-	categories []string
-	isDefault  bool
+	name      string
+	host      string
+	port      int
+	from      string
+	fromName  string
+	isDefault bool
 }
 
-// newBundle builds a *config.ConfigBundle from the given providers.
+// newBundle builds a *config.ConfigBundle from the given providers, plus a
+// single test service ("integration-test", authenticated via testAPIKey)
+// whose email-channel policy allows every listed provider. Task 12 removed
+// the unauthenticated /notify/email route and notifier.EmailClientRegistry;
+// these tests now authenticate and route exactly like real v2 traffic
+// (auth.Registry + notifier.ProviderRegistry + policy.ResolveProvider).
 func newBundle(providers ...smtpProvider) *config.ConfigBundle {
 	smtp := make(map[string]*config.SMTPClientConfig, len(providers))
+	names := make([]string, 0, len(providers))
+	defaultProvider := ""
 	for _, p := range providers {
 		smtp[p.name] = &config.SMTPClientConfig{
 			Name:        p.name,
@@ -155,11 +168,27 @@ func newBundle(providers ...smtpProvider) *config.ConfigBundle {
 			IsDefault:   p.isDefault,
 			FromAddress: p.from,
 			FromName:    p.fromName,
-			Categories:  p.categories,
+		}
+		names = append(names, p.name)
+		if p.isDefault || defaultProvider == "" {
+			defaultProvider = p.name
 		}
 	}
 	return &config.ConfigBundle{
-		SMTP:      smtp,
+		SMTP: smtp,
+		Services: map[string]*config.ServiceConfig{
+			"integration-test": {
+				Service: "integration-test", Tenant: "it", Enabled: true,
+				Keys: []config.KeyEntry{{ID: "it1", SHA256: auth.HashKey(testAPIKey), State: "active"}},
+				Channels: map[string]*config.ChannelPolicy{
+					"email": {
+						Providers:       names,
+						DefaultProvider: defaultProvider,
+						Rate:            config.RateConfig{RPM: 1000, Daily: 100000},
+					},
+				},
+			},
+		},
 		Revision:  1,
 		Timestamp: time.Now(),
 	}
@@ -196,7 +225,7 @@ func (s *swappableSender) swap(snd notifier.Sender) {
 // stopped via t.Cleanup.
 func startWorker(t *testing.T, c client.Client, providerName string, getSender func() notifier.Sender) {
 	t.Helper()
-	tq := notifier.TaskQueueFor(providerName)
+	tq := channel.TaskQueue("email", providerName)
 	w := worker.New(c, tq, worker.Options{})
 
 	activities := &temporal.EmailActivities{GetSender: getSender}
@@ -225,16 +254,22 @@ func emailServiceForAddr(host string, port int, from, fromName string) notifier.
 }
 
 // newServer stands up an httptest server exposing the real handlers. Any of
-// emailHandler / dlqHandler / adminHandler may be nil to omit that route.
+// notifyHandler / dlqHandler / adminHandler may be nil to omit that route.
+// authReg is required whenever notifyHandler is non-nil (it authenticates
+// the /v1/notify/{channel} route, see auth.Middleware).
 //
-// The DLQ routes are wired at their production v1 paths behind auth.Middleware
-// (Task 10 made /v1/dlq/* authenticated and tenant-scoped); callers must
-// present dlqAdminToken via ADMIN_TOKEN (see postJSON/getJSON) to reach them.
-func newServer(t *testing.T, emailHandler *api.EmailHandler, dlqHandler *api.DLQHandler, adminHandler *api.AdminHandler) *httptest.Server {
+// The notify and DLQ routes are wired at their production v1 paths behind
+// auth.Middleware (Task 10 made /v1/dlq/* authenticated and tenant-scoped;
+// Task 12 removed the unauthenticated /notify/email route in favor of the
+// authenticated /v1/notify/{channel}). Notify callers must present
+// testAPIKey (see newBundle/postNotify); DLQ callers must present
+// dlqAdminToken via ADMIN_TOKEN (see postJSON/getJSON).
+func newServer(t *testing.T, notifyHandler *api.NotifyHandler, authReg *auth.Registry, dlqHandler *api.DLQHandler, adminHandler *api.AdminHandler) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
-	if emailHandler != nil {
-		mux.HandleFunc("/notify/email", emailHandler.HandleRequest)
+	if notifyHandler != nil {
+		authMW := auth.Middleware(authReg)
+		mux.Handle("POST /v1/notify/{channel}", authMW(http.HandlerFunc(notifyHandler.Handle)))
 	}
 	if dlqHandler != nil {
 		authMW := auth.Middleware(auth.NewRegistry(nil))
@@ -249,15 +284,34 @@ func newServer(t *testing.T, emailHandler *api.EmailHandler, dlqHandler *api.DLQ
 	return srv
 }
 
-// postEmail POSTs an EmailMessage JSON body to the given URL and returns the
-// status code and decoded API response.
-func postEmail(t *testing.T, url string, msg models.EmailMessage) (int, utils_APIResponse) {
+// notifyRequest mirrors the authenticated /v1/notify/email request body (see
+// internal/channel/email.go's emailRequest). Provider is optional: empty
+// means "use the service's policy default" (policy.ResolveProvider).
+type notifyRequest struct {
+	To       string `json:"to"`
+	Subject  string `json:"subject"`
+	Body     string `json:"body"`
+	Provider string `json:"provider,omitempty"`
+}
+
+// postNotify POSTs a notifyRequest JSON body, authenticated with apiKey, to
+// the given URL (normally .../v1/notify/email) and returns the status code
+// and decoded API response.
+func postNotify(t *testing.T, url, apiKey string, msg notifyRequest) (int, utils_APIResponse) {
 	t.Helper()
 	body, err := json.Marshal(msg)
 	if err != nil {
-		t.Fatalf("marshal email: %v", err)
+		t.Fatalf("marshal notify request: %v", err)
 	}
-	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("build POST %s: %v", url, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)
 	}
@@ -372,19 +426,20 @@ func TestIntegration_HappyPath(t *testing.T) {
 		fromName:  fromName,
 		isDefault: true,
 	})
-	registry, err := notifier.NewEmailClientRegistry(bundle)
-	if err != nil {
-		t.Fatalf("build registry: %v", err)
-	}
+	authReg := auth.NewRegistry(bundle)
+	providers := notifier.NewProviderRegistry(bundle)
 
 	startWorker(t, c, provider, func() notifier.Sender {
 		return emailServiceForMock(mock, from, fromName)
 	})
 
-	emailHandler := &api.EmailHandler{TemporalClient: c, Registry: registry}
-	srv := newServer(t, emailHandler, nil, nil)
+	notifyHandler := &api.NotifyHandler{
+		TemporalClient: c, Channels: channel.NewRegistry(),
+		Providers: providers, Limiter: policy.NewMemoryLimiter(nil), Logger: testLogger(),
+	}
+	srv := newServer(t, notifyHandler, authReg, nil, nil)
 
-	status, resp := postEmail(t, srv.URL+"/notify/email", models.EmailMessage{
+	status, resp := postNotify(t, srv.URL+"/v1/notify/email", testAPIKey, notifyRequest{
 		To:      "alice@example.com",
 		Subject: "Welcome to Beacon",
 		Body:    "Hello Alice, your account is ready.",
@@ -407,10 +462,14 @@ func TestIntegration_HappyPath(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Scenario 2: Routing by client_hint to one of two providers
+// Scenario 2: Routing to one of two allow-listed providers via the explicit
+// "provider" field. Task 12 removed client_hint / category-based routing
+// (notifier.EmailClientRegistry) along with the unauthenticated route; the
+// v2 surface routes by an explicit, policy-checked provider binding instead
+// (policy.ResolveProvider), which this test now exercises.
 // -----------------------------------------------------------------------------
 
-func TestIntegration_RoutingByClientHint(t *testing.T) {
+func TestIntegration_RoutingByProvider(t *testing.T) {
 	c := dialOrSkip(t)
 
 	mockA := testsupport.NewMockSMTPServer(t)
@@ -418,34 +477,28 @@ func TestIntegration_RoutingByClientHint(t *testing.T) {
 
 	providerA := providerNameFor(t, "transactional")
 	providerB := providerNameFor(t, "marketing")
-	const catA = "transactional"
-	const catB = "marketing"
 	const fromA = "tx@beacon.test"
 	const fromB = "mkt@beacon.test"
 
 	bundle := newBundle(
 		smtpProvider{
-			name:       providerA,
-			host:       mockA.Host(),
-			port:       mockA.Port(),
-			from:       fromA,
-			fromName:   "Beacon Tx",
-			categories: []string{catA},
-			isDefault:  true,
+			name:      providerA,
+			host:      mockA.Host(),
+			port:      mockA.Port(),
+			from:      fromA,
+			fromName:  "Beacon Tx",
+			isDefault: true,
 		},
 		smtpProvider{
-			name:       providerB,
-			host:       mockB.Host(),
-			port:       mockB.Port(),
-			from:       fromB,
-			fromName:   "Beacon Mkt",
-			categories: []string{catB},
+			name:     providerB,
+			host:     mockB.Host(),
+			port:     mockB.Port(),
+			from:     fromB,
+			fromName: "Beacon Mkt",
 		},
 	)
-	registry, err := notifier.NewEmailClientRegistry(bundle)
-	if err != nil {
-		t.Fatalf("build registry: %v", err)
-	}
+	authReg := auth.NewRegistry(bundle)
+	providers := notifier.NewProviderRegistry(bundle)
 
 	// One worker per provider task queue.
 	startWorker(t, c, providerA, func() notifier.Sender {
@@ -455,15 +508,18 @@ func TestIntegration_RoutingByClientHint(t *testing.T) {
 		return emailServiceForMock(mockB, fromB, "Beacon Mkt")
 	})
 
-	emailHandler := &api.EmailHandler{TemporalClient: c, Registry: registry}
-	srv := newServer(t, emailHandler, nil, nil)
+	notifyHandler := &api.NotifyHandler{
+		TemporalClient: c, Channels: channel.NewRegistry(),
+		Providers: providers, Limiter: policy.NewMemoryLimiter(nil), Logger: testLogger(),
+	}
+	srv := newServer(t, notifyHandler, authReg, nil, nil)
 
-	// Route to provider B via client_hint == catB.
-	status, resp := postEmail(t, srv.URL+"/notify/email", models.EmailMessage{
-		To:         "bob@example.com",
-		Subject:    "Big Sale",
-		Body:       "50% off everything.",
-		ClientHint: catB,
+	// Route to provider B via the explicit "provider" field.
+	status, resp := postNotify(t, srv.URL+"/v1/notify/email", testAPIKey, notifyRequest{
+		To:       "bob@example.com",
+		Subject:  "Big Sale",
+		Body:     "50% off everything.",
+		Provider: providerB,
 	})
 	if status != http.StatusAccepted {
 		t.Fatalf("expected 202, got %d (resp: %+v)", status, resp)
@@ -501,10 +557,8 @@ func TestIntegration_ValidationFailure(t *testing.T) {
 		fromName:  "Beacon",
 		isDefault: true,
 	})
-	registry, err := notifier.NewEmailClientRegistry(bundle)
-	if err != nil {
-		t.Fatalf("build registry: %v", err)
-	}
+	authReg := auth.NewRegistry(bundle)
+	providers := notifier.NewProviderRegistry(bundle)
 
 	// Start a worker so that if (incorrectly) a workflow were started, delivery
 	// could happen -- making the "no delivery" assertion meaningful.
@@ -512,10 +566,13 @@ func TestIntegration_ValidationFailure(t *testing.T) {
 		return emailServiceForMock(mock, from, "Beacon")
 	})
 
-	emailHandler := &api.EmailHandler{TemporalClient: c, Registry: registry}
-	srv := newServer(t, emailHandler, nil, nil)
+	notifyHandler := &api.NotifyHandler{
+		TemporalClient: c, Channels: channel.NewRegistry(),
+		Providers: providers, Limiter: policy.NewMemoryLimiter(nil), Logger: testLogger(),
+	}
+	srv := newServer(t, notifyHandler, authReg, nil, nil)
 
-	status, resp := postEmail(t, srv.URL+"/notify/email", models.EmailMessage{
+	status, resp := postNotify(t, srv.URL+"/v1/notify/email", testAPIKey, notifyRequest{
 		To:      "not-an-email-address",
 		Subject: "Should be rejected",
 		Body:    "This must never be delivered.",
@@ -551,21 +608,25 @@ func TestIntegration_MethodNotAllowed(t *testing.T) {
 		fromName:  "Beacon",
 		isDefault: true,
 	})
-	registry, err := notifier.NewEmailClientRegistry(bundle)
-	if err != nil {
-		t.Fatalf("build registry: %v", err)
+	authReg := auth.NewRegistry(bundle)
+	providers := notifier.NewProviderRegistry(bundle)
+
+	notifyHandler := &api.NotifyHandler{
+		TemporalClient: c, Channels: channel.NewRegistry(),
+		Providers: providers, Limiter: policy.NewMemoryLimiter(nil), Logger: testLogger(),
 	}
+	srv := newServer(t, notifyHandler, authReg, nil, nil)
 
-	emailHandler := &api.EmailHandler{TemporalClient: c, Registry: registry}
-	srv := newServer(t, emailHandler, nil, nil)
-
-	resp, err := http.Get(srv.URL + "/notify/email")
+	// The route is registered as "POST /v1/notify/{channel}"; Go's ServeMux
+	// rejects a method mismatch with 405 at the mux level, before auth.Middleware
+	// even runs -- so this requires no Authorization header.
+	resp, err := http.Get(srv.URL + "/v1/notify/email")
 	if err != nil {
-		t.Fatalf("GET /notify/email: %v", err)
+		t.Fatalf("GET /v1/notify/email: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Fatalf("expected 405 for GET /notify/email, got %d", resp.StatusCode)
+		t.Fatalf("expected 405 for GET /v1/notify/email, got %d", resp.StatusCode)
 	}
 }
 
@@ -588,8 +649,8 @@ func TestIntegration_SMTPFailureToDLQToReplay(t *testing.T) {
 	// the healthy mock before replay, mirroring cmd/email_worker hot-swap.
 	swap := newSwappableService(emailServiceForAddr("127.0.0.1", 1, from, fromName))
 
-	// Registry only needs to resolve the provider for routing; the actual SMTP
-	// target the worker uses comes from the swappable service.
+	// The provider registry only needs to resolve the provider for routing;
+	// the actual SMTP target the worker uses comes from the swappable service.
 	bundle := newBundle(smtpProvider{
 		name:      provider,
 		host:      "127.0.0.1",
@@ -598,20 +659,21 @@ func TestIntegration_SMTPFailureToDLQToReplay(t *testing.T) {
 		fromName:  fromName,
 		isDefault: true,
 	})
-	registry, err := notifier.NewEmailClientRegistry(bundle)
-	if err != nil {
-		t.Fatalf("build registry: %v", err)
-	}
+	authReg := auth.NewRegistry(bundle)
+	providers := notifier.NewProviderRegistry(bundle)
 
 	startWorker(t, c, provider, swap.get)
 
 	dlqService := dlq.NewDLQService(c, namespace, testLogger())
 	dlqHandler := api.NewDLQHandler(dlqService, testLogger())
-	emailHandler := &api.EmailHandler{TemporalClient: c, Registry: registry}
-	srv := newServer(t, emailHandler, dlqHandler, nil)
+	notifyHandler := &api.NotifyHandler{
+		TemporalClient: c, Channels: channel.NewRegistry(),
+		Providers: providers, Limiter: policy.NewMemoryLimiter(nil), Logger: testLogger(),
+	}
+	srv := newServer(t, notifyHandler, authReg, dlqHandler, nil)
 
 	// POST a valid email; routing succeeds, but delivery will fail repeatedly.
-	status, resp := postEmail(t, srv.URL+"/notify/email", models.EmailMessage{
+	status, resp := postNotify(t, srv.URL+"/v1/notify/email", testAPIKey, notifyRequest{
 		To:      "carol@example.com",
 		Subject: "Will fail then replay",
 		Body:    "Initial delivery fails; replay must succeed.",
@@ -689,10 +751,10 @@ func TestIntegration_SMTPFailureToDLQToReplay(t *testing.T) {
 // is heavily exercised by the unit tests in internal/config and internal/api.
 // Standing up a real ConfigService here would require non-test production wiring
 // and external config sources, which is out of scope for this integration file
-// (handlers + Temporal + SMTP). Routing changes via Registry.Reload are already
-// covered by the routing scenario (TestIntegration_RoutingByClientHint) and the
-// registry unit tests, so this optional scenario is intentionally omitted to
-// keep the integration surface focused and deterministic.
+// (handlers + Temporal + SMTP). Routing changes via ProviderRegistry.Reload are
+// already covered by the routing scenario (TestIntegration_RoutingByProvider)
+// and the registry unit tests, so this optional scenario is intentionally
+// omitted to keep the integration surface focused and deterministic.
 
 // -----------------------------------------------------------------------------
 // HTTP helpers

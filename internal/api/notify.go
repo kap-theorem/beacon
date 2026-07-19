@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,13 @@ import (
 const maxBodyBytes = 256 << 10 // 256 KB
 
 var idempotencyKeyRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+
+// WorkflowStarter is the slice of the Temporal client the notify handler
+// needs. *client.Client (the real Temporal client) satisfies this
+// automatically.
+type WorkflowStarter interface {
+	ExecuteWorkflow(ctx context.Context, options client.StartWorkflowOptions, workflow interface{}, args ...interface{}) (client.WorkflowRun, error)
+}
 
 // NotifyHandler serves POST /v1/notify/{channel}: policy enforcement and
 // enqueue. Authentication happens in auth.Middleware before this handler.

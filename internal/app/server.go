@@ -33,7 +33,6 @@ func ParsePollInterval(raw string, def time.Duration) time.Duration {
 // ServerDeps are the dependencies needed to build the server mux.
 type ServerDeps struct {
 	TemporalClient api.WorkflowStarter
-	LegacyRegistry *notifier.EmailClientRegistry // removed at cutover (Task 12)
 	Channels       channel.Registry
 	Providers      *notifier.ProviderRegistry
 	AuthRegistry   *auth.Registry
@@ -46,16 +45,14 @@ type ServerDeps struct {
 
 // BuildServerMux wires all HTTP routes. /v1 routes run behind auth middleware.
 func BuildServerMux(d ServerDeps) *http.ServeMux {
-	legacy := &api.EmailHandler{TemporalClient: d.TemporalClient, Registry: d.LegacyRegistry}
 	notify := &api.NotifyHandler{
 		TemporalClient: d.TemporalClient, Channels: d.Channels,
 		Providers: d.Providers, Limiter: d.Limiter, Logger: d.Logger,
 	}
-	adminHandler := api.NewAdminHandler(d.ConfigService, d.Providers, d.AuthRegistry, d.LegacyRegistry, d.Logger)
+	adminHandler := api.NewAdminHandler(d.ConfigService, d.Providers, d.AuthRegistry, d.Logger)
 	authMW := auth.Middleware(d.AuthRegistry)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/notify/email", legacy.HandleRequest) // deleted at cutover
 	mux.Handle("POST /v1/notify/{channel}", authMW(http.HandlerFunc(notify.Handle)))
 	mux.HandleFunc("/healthz/live", d.Health.HandleLive)
 	mux.HandleFunc("/healthz/ready", d.Health.HandleReady)

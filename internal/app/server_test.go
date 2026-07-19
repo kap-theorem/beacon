@@ -57,30 +57,6 @@ func buildTestConfigService(t *testing.T) *config.ConfigService {
 	return svc
 }
 
-// buildTestRegistry creates an EmailClientRegistry with a single is_default provider.
-func buildTestRegistry(t *testing.T) *notifier.EmailClientRegistry {
-	t.Helper()
-	bundle := &config.ConfigBundle{
-		SMTP: map[string]*config.SMTPClientConfig{
-			"test": {
-				Name:        "test",
-				Provider:    "test",
-				Host:        "localhost",
-				Port:        587,
-				IsDefault:   true,
-				FromAddress: "noreply@beacon.test",
-			},
-		},
-		Revision:  1,
-		Timestamp: time.Now(),
-	}
-	reg, err := notifier.NewEmailClientRegistry(bundle)
-	if err != nil {
-		t.Fatalf("failed to build registry: %v", err)
-	}
-	return reg
-}
-
 // buildTestDeps returns a ServerDeps with all non-nil fields populated.
 func buildTestDeps(t *testing.T, dlqSvc api.DLQQuerier) ServerDeps {
 	t.Helper()
@@ -89,7 +65,6 @@ func buildTestDeps(t *testing.T, dlqSvc api.DLQQuerier) ServerDeps {
 	bundle := cs.GetConfig()
 	return ServerDeps{
 		TemporalClient: &fakeStarter{},
-		LegacyRegistry: buildTestRegistry(t),
 		Channels:       channel.NewRegistry(),
 		Providers:      notifier.NewProviderRegistry(bundle),
 		AuthRegistry:   auth.NewRegistry(bundle),
@@ -232,19 +207,6 @@ func TestBuildServerMux_HealthzLive_Returns200(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("/healthz/live: expected 200, got %d", rec.Code)
-	}
-}
-
-func TestBuildServerMux_NotifyEmail_GetReturns405(t *testing.T) {
-	deps := buildTestDeps(t, nil)
-	mux := BuildServerMux(deps)
-
-	req := httptest.NewRequest(http.MethodGet, "/notify/email", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Errorf("/notify/email GET: expected 405, got %d", rec.Code)
 	}
 }
 

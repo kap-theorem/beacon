@@ -13,15 +13,14 @@ import (
 
 // AdminHandler exposes privileged config management endpoints.
 type AdminHandler struct {
-	ConfigService  *config.ConfigService
-	Providers      *notifier.ProviderRegistry
-	AuthRegistry   *auth.Registry
-	LegacyRegistry *notifier.EmailClientRegistry // removed at cutover
-	logger         *slog.Logger
+	ConfigService *config.ConfigService
+	Providers     *notifier.ProviderRegistry
+	AuthRegistry  *auth.Registry
+	logger        *slog.Logger
 }
 
-func NewAdminHandler(cs *config.ConfigService, providers *notifier.ProviderRegistry, authReg *auth.Registry, legacy *notifier.EmailClientRegistry, logger *slog.Logger) *AdminHandler {
-	return &AdminHandler{ConfigService: cs, Providers: providers, AuthRegistry: authReg, LegacyRegistry: legacy, logger: logger}
+func NewAdminHandler(cs *config.ConfigService, providers *notifier.ProviderRegistry, authReg *auth.Registry, logger *slog.Logger) *AdminHandler {
+	return &AdminHandler{ConfigService: cs, Providers: providers, AuthRegistry: authReg, logger: logger}
 }
 
 // HandleConfigRefresh handles POST /admin/config/refresh.
@@ -54,18 +53,8 @@ func (h *AdminHandler) HandleConfigRefresh(w http.ResponseWriter, req *http.Requ
 	}
 
 	bundle := h.ConfigService.GetConfig()
-	// Reload order: provider/auth registries first, legacy last; a legacy
-	// failure (empty SMTP) leaves registries momentarily divergent until the
-	// next successful poll — acceptable until legacy is removed (Task 12).
 	h.Providers.Reload(bundle)
 	h.AuthRegistry.Reload(bundle)
-	if h.LegacyRegistry != nil {
-		if err := h.LegacyRegistry.Reload(bundle); err != nil {
-			h.logger.Error("legacy registry reload after admin refresh failed", slog.Any("error", err))
-			utils.WriteError(w, http.StatusInternalServerError, "registry reload failed")
-			return
-		}
-	}
 
 	utils.WriteSuccess(w, http.StatusOK, "config refreshed", map[string]any{
 		"revision":  bundle.Revision,
