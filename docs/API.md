@@ -206,7 +206,7 @@ request.
 | 5 | `413 Payload Too Large` | Body exceeds 256 KB | `"request body exceeds 256 KB"` |
 | 5 | `400 Bad Request` | Body could not be read | `"failed to read request body"` |
 | 6 | `400 Bad Request` | Malformed JSON | `"invalid request body"` |
-| 6 | `400 Bad Request` | Missing/invalid `to`, missing `subject`, bad `cc`/`bcc` address, or too many `cc`+`bcc` recipients | e.g. `"missing required field: to"`, `"invalid email address: to"`, `"too many recipients in cc/bcc (max 50)"`, `"invalid email address in cc: <addr>"` |
+| 6 | `400 Bad Request` | Missing/invalid `to`, missing `subject`, bad `cc`/`bcc` address, or too many `cc`+`bcc` recipients | e.g. `"missing required field: to"`, `"invalid email address: to"`, `"too many recipients in cc/bcc (max 50)"`, `"invalid email address in cc: <addr>"`, `"invalid email address in bcc: <addr>"` |
 | 7 | `403 Forbidden` | Requested `provider` outside this service's allowlist | `"provider \"<name>\" not allowed for this service"` |
 | 8 | `503 Service Unavailable` | Resolved provider has no loaded config | `"provider \"<name>\" is not configured"` |
 | 9 | `400 Bad Request` | `Idempotency-Key` present but malformed | `"invalid Idempotency-Key: 1-128 chars of A-Za-z0-9._-"` |

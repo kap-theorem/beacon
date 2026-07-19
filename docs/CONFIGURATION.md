@@ -190,7 +190,7 @@ directly from environment variables, with a generous rate limit (1000 rpm / 1000
 | `DEV_SMTP_HOST` | — | SMTP host (required in dev mode, e.g. `localhost`) |
 | `DEV_SMTP_PORT` | `587` | SMTP port |
 | `DEV_SMTP_NAME` | `dev` | Internal provider name for this entry; also the synthesized service's allowed/default provider |
-| `DEV_SMTP_PROVIDER` | value of `DEV_SMTP_NAME` | Provider label used in responses and task-queue routing |
+| `DEV_SMTP_PROVIDER` | value of `DEV_SMTP_NAME` | Free-text label — not used for routing; `DEV_SMTP_NAME` is the routing key |
 | `DEV_SMTP_AUTH_TYPE` | `PLAIN` | Auth type: `PLAIN` or `LOGIN` (not validated in dev mode, but `OAUTH2` is rejected in production) |
 | `DEV_SMTP_FROM` | value of `DEV_SMTP_USERNAME`, or `noreply@beacon.local` | From address for outbound email |
 | `DEV_SMTP_FROM_NAME` | `Beacon` | Display name for outbound email |

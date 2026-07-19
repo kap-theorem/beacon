@@ -113,4 +113,4 @@ bash scripts/readiness-check.sh
 - Go 1.24+
 - [Temporal](https://learn.temporal.io/getting_started/go/dev_environment/) running at `localhost:7233`
 - An SMTP provider or dev mode (`DEV_MODE=true`) with local SMTP vars
-- [Infisical](docs/DEPLOYMENT.md#4-infisical-setup) for production SMTP secret management (optional in dev mode)
+- [Infisical](docs/DEPLOYMENT.md#4-infisical-setup-control-plane) for production SMTP secret management (optional in dev mode)

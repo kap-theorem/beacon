@@ -488,7 +488,7 @@ This creates a CNAME record in your Cloudflare DNS zone pointing `beacon.example
 cp ~/.cloudflared/<TUNNEL_ID>.json deploy/cloudflared/<TUNNEL_ID>.json
 ```
 
-Edit `deploy/cloudflared/config.yml` and replace both occurrences of `<TUNNEL_ID>` with your actual tunnel ID. The file should route `/v1/*` (not the old bare `/notify/email`) to the server:
+Edit `deploy/cloudflared/config.yml` and replace both occurrences of `<TUNNEL_ID>` with your actual tunnel ID. The file routes `/v1/notify/email` and `/v1/dlq/*` (not the old bare `/notify/email`) to the server:
 
 ```yaml
 tunnel: abc123def456...
@@ -500,7 +500,11 @@ ingress:
     service: http://beacon-server:6969
 
   - hostname: beacon.example.com
-    path: /v1/*
+    path: /v1/notify/email
+    service: http://beacon-server:6969
+
+  - hostname: beacon.example.com
+    path: /v1/dlq/*
     service: http://beacon-server:6969
 
   - service: http_status:404
