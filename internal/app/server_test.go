@@ -10,9 +10,12 @@ import (
 	"time"
 
 	"beacon/internal/api"
+	"beacon/internal/auth"
+	"beacon/internal/channel"
 	"beacon/internal/config"
 	"beacon/internal/dlq"
 	"beacon/internal/notifier"
+	"beacon/internal/policy"
 
 	"go.temporal.io/sdk/client"
 )
@@ -83,10 +86,16 @@ func buildTestDeps(t *testing.T, dlqSvc api.DLQQuerier) ServerDeps {
 	t.Helper()
 	health := config.NewHealthChecker()
 	health.SetReady(true)
+	cs := buildTestConfigService(t)
+	bundle := cs.GetConfig()
 	return ServerDeps{
 		TemporalClient: &fakeStarter{},
-		Registry:       buildTestRegistry(t),
-		ConfigService:  buildTestConfigService(t),
+		LegacyRegistry: buildTestRegistry(t),
+		Channels:       channel.NewRegistry(),
+		Providers:      notifier.NewProviderRegistry(bundle),
+		AuthRegistry:   auth.NewRegistry(bundle),
+		Limiter:        policy.NewMemoryLimiter(nil),
+		ConfigService:  cs,
 		Health:         health,
 		DLQService:     dlqSvc,
 		Logger:         slog.New(slog.NewTextHandler(os.Stderr, nil)),

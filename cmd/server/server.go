@@ -3,9 +3,12 @@ package main
 import (
 	"beacon/internal/api"
 	"beacon/internal/app"
+	"beacon/internal/auth"
+	"beacon/internal/channel"
 	confpkg "beacon/internal/config"
 	"beacon/internal/dlq"
 	"beacon/internal/notifier"
+	"beacon/internal/policy"
 	"beacon/utils"
 	"context"
 	"errors"
@@ -45,6 +48,11 @@ func main() {
 	}
 	logger.Info("email client registry ready", slog.Any("providers", registry.ProviderNames()))
 
+	authRegistry := auth.NewRegistry(bundle)
+	providerRegistry := notifier.NewProviderRegistry(bundle)
+	channels := channel.NewRegistry()
+	limiter := policy.NewMemoryLimiter(nil)
+
 	// Long-lived context — cancelled on SIGTERM/SIGINT to stop background
 	// goroutines and trigger graceful HTTP server shutdown.
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
@@ -56,6 +64,8 @@ func main() {
 		if reloadErr := registry.Reload(b); reloadErr != nil {
 			logger.Error("registry reload failed", slog.Any("error", reloadErr))
 		}
+		providerRegistry.Reload(b)
+		authRegistry.Reload(b)
 	}, logger)
 	go watcher.Start(ctx)
 
@@ -87,7 +97,11 @@ func main() {
 
 	mux := app.BuildServerMux(app.ServerDeps{
 		TemporalClient: temporalClient,
-		Registry:       registry,
+		LegacyRegistry: registry,
+		Channels:       channels,
+		Providers:      providerRegistry,
+		AuthRegistry:   authRegistry,
+		Limiter:        limiter,
 		ConfigService:  confpkg.GetConfigService(),
 		Health:         healthChecker,
 		DLQService:     dlqSvc,

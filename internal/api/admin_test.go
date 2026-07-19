@@ -1,6 +1,7 @@
 package api
 
 import (
+	"beacon/internal/auth"
 	"beacon/internal/config"
 	"beacon/internal/notifier"
 	"encoding/json"
@@ -67,7 +68,10 @@ func newAdminHandlerWithLiveCS(t *testing.T, infisicalURL string) *AdminHandler 
 	registry, err := notifier.NewEmailClientRegistry(initialBundle)
 	require.NoError(t, err)
 
-	return NewAdminHandler(cs, registry, discardLogger())
+	providers := notifier.NewProviderRegistry(initialBundle)
+	authReg := auth.NewRegistry(initialBundle)
+
+	return NewAdminHandler(cs, providers, authReg, registry, discardLogger())
 }
 
 // newDevModeAdminHandler creates an AdminHandler whose ConfigService is in DEV_MODE.
