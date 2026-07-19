@@ -127,3 +127,30 @@ func TestHandleReady_ResultCached(t *testing.T) {
 		t.Fatalf("want 1 evaluation (cached), got %d", calls)
 	}
 }
+
+func TestHandleReady_CallerCancellationDoesNotPoisonCache(t *testing.T) {
+	hc := NewHealthChecker(ReadinessCheck{Name: "slow", Fn: func(ctx context.Context) error {
+		time.Sleep(100 * time.Millisecond)
+		return nil
+	}})
+
+	// First prober arrives with an already-cancelled context (simulating a
+	// short-timeout client, e.g. kubelet, that disconnected mid-check).
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest("GET", "/healthz/ready", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	hc.HandleReady(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("caller cancellation must not affect shared evaluation: want 200, got %d", rec.Code)
+	}
+
+	// A normal, uncancelled request immediately after must also see 200 —
+	// the cached result must not have been poisoned by the first caller's
+	// cancelled context.
+	rec2 := httptest.NewRecorder()
+	hc.HandleReady(rec2, httptest.NewRequest("GET", "/healthz/ready", nil))
+	if rec2.Code != 200 {
+		t.Fatalf("want 200 for follow-up request, got %d", rec2.Code)
+	}
+}
