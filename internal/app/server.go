@@ -69,8 +69,8 @@ func BuildServerMux(d ServerDeps) *http.ServeMux {
 		unavailable := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			utils.WriteError(w, http.StatusServiceUnavailable, "temporal service not available")
 		})
-		mux.Handle("GET /v1/dlq/failed", unavailable)
-		mux.Handle("POST /v1/dlq/replay/{workflowID}", unavailable)
+		mux.Handle("GET /v1/dlq/failed", authMW(unavailable))
+		mux.Handle("POST /v1/dlq/replay/{workflowID}", authMW(unavailable))
 	}
 	return mux
 }

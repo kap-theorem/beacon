@@ -152,11 +152,29 @@ func TestBuildServerMux_DLQNil_Returns503(t *testing.T) {
 	mux := BuildServerMux(deps)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/dlq/failed", nil)
+	req.Header.Set("Authorization", "Bearer bk_k1_devsecret") // dev-mode key from buildTestConfigService
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("/v1/dlq/failed with nil DLQ: expected 503, got %d", rec.Code)
+	}
+}
+
+// TestBuildServerMux_DLQNil_Unauthenticated401 proves that even when
+// DLQService is nil, the "unavailable" v1 DLQ routes still require auth:
+// an unauthenticated caller must be rejected with 401 before ever reaching
+// the 503 handler, so unauthenticated callers can't probe route availability.
+func TestBuildServerMux_DLQNil_Unauthenticated401(t *testing.T) {
+	deps := buildTestDeps(t, nil)
+	mux := BuildServerMux(deps)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/dlq/failed", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("/v1/dlq/failed with nil DLQ, no auth: expected 401, got %d", rec.Code)
 	}
 }
 
@@ -236,6 +254,7 @@ func TestBuildServerMux_DLQReplay_NilDLQ_Returns503(t *testing.T) {
 	mux := BuildServerMux(deps)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/dlq/replay/some-id", nil)
+	req.Header.Set("Authorization", "Bearer bk_k1_devsecret") // dev-mode key from buildTestConfigService
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
