@@ -130,8 +130,12 @@ func TestHandleReady_ResultCached(t *testing.T) {
 
 func TestHandleReady_CallerCancellationDoesNotPoisonCache(t *testing.T) {
 	hc := NewHealthChecker(ReadinessCheck{Name: "slow", Fn: func(ctx context.Context) error {
-		time.Sleep(100 * time.Millisecond)
-		return nil
+		select {
+		case <-time.After(100 * time.Millisecond):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}})
 
 	// First prober arrives with an already-cancelled context (simulating a
