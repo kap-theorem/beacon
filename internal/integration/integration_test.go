@@ -1046,6 +1046,10 @@ func TestIntegration_IdempotentDuplicate(t *testing.T) {
 	if dup, _ := resp1.Data["duplicate"].(bool); dup {
 		t.Errorf("expected duplicate=false on the first request, got %+v", resp1.Data)
 	}
+	id1, _ := resp1.Data["workflow_id"].(string)
+	if id1 == "" {
+		t.Fatalf("expected a non-empty workflow_id on the first request, got %+v", resp1.Data)
+	}
 
 	status2, resp2, _ := doNotify(t, srv.URL+"/v1/notify/email", testAPIKey, msg, headers)
 	if status2 != http.StatusAccepted {
@@ -1053,6 +1057,12 @@ func TestIntegration_IdempotentDuplicate(t *testing.T) {
 	}
 	if dup, _ := resp2.Data["duplicate"].(bool); !dup {
 		t.Errorf("expected duplicate=true on the second request, got %+v", resp2.Data)
+	}
+	// The duplicate response must echo the ORIGINAL workflow's ID, not mint a
+	// new one -- that's the whole point of idempotency.
+	id2, _ := resp2.Data["workflow_id"].(string)
+	if id2 != id1 {
+		t.Errorf("duplicate response workflow_id %q != original %q", id2, id1)
 	}
 
 	// Exactly one message must be delivered: wait for the first delivery, then
