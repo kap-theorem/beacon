@@ -239,3 +239,20 @@ func TestBuildServerMux_AdminConfigRefresh_Returns403WhenNoToken(t *testing.T) {
 		t.Errorf("/admin/config/refresh without token: expected 403, got %d", rec.Code)
 	}
 }
+
+// TestBuildServerMux_V1Notify_RequiresAuth proves that the production wiring in
+// BuildServerMux (not just the internal/api test mux) puts /v1/notify/{channel}
+// behind auth.Middleware: an unauthenticated request must be rejected before it
+// ever reaches NotifyHandler.
+func TestBuildServerMux_V1Notify_RequiresAuth(t *testing.T) {
+	deps := buildTestDeps(t, nil)
+	mux := BuildServerMux(deps)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/notify/email", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("/v1/notify/email without auth: expected 401, got %d", rec.Code)
+	}
+}

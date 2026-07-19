@@ -98,15 +98,15 @@ func (h *NotifyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if ok, retryAfter := h.Limiter.Allow(ident.Service, ch.Name(), pol.Rate); !ok {
-		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(retryAfter.Seconds())+1))
-		utils.WriteError(w, http.StatusTooManyRequests, "rate limit exceeded")
-		return
-	}
-
 	idem := r.Header.Get("Idempotency-Key")
 	if idem != "" && !idempotencyKeyRe.MatchString(idem) {
 		utils.WriteError(w, http.StatusBadRequest, "invalid Idempotency-Key: 1-128 chars of A-Za-z0-9._-")
+		return
+	}
+
+	if ok, retryAfter := h.Limiter.Allow(ident.Service, ch.Name(), pol.Rate); !ok {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(retryAfter.Seconds())+1))
+		utils.WriteError(w, http.StatusTooManyRequests, "rate limit exceeded")
 		return
 	}
 
@@ -137,6 +137,8 @@ func (h *NotifyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	we, err := h.TemporalClient.ExecuteWorkflow(r.Context(), opts, ch.WorkflowName(), n)
 	if err != nil {
 		if temporalerr.IsWorkflowExecutionAlreadyStartedError(err) {
+			// A duplicate still consumed a rate token: refunding would need
+			// post-hoc limiter APIs for a rare, cheap case — deliberate trade-off.
 			utils.WriteSuccess(w, http.StatusAccepted, "duplicate request: notification already accepted", map[string]any{
 				"workflow_id": opts.ID, "workflow_run_id": "", "provider": provider, "duplicate": true,
 			})

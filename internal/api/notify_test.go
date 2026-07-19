@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"beacon/internal/notifier"
 	"beacon/internal/policy"
 
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 )
 
@@ -48,23 +51,46 @@ func (f *notifyFakeStarter) ExecuteWorkflow(ctx context.Context, options client.
 	return notifyFakeRun{id: options.ID, runID: "run-1"}, nil
 }
 
-func testMux(t *testing.T, starter *notifyFakeStarter, limiter policy.RateLimiter) (http.Handler, *auth.Registry) {
-	t.Helper()
+// testBundle returns the shared fixture bundle: "billing-api" (key
+// bk_k1_secret123) may send email via sendgrid or the unconfigured "ses"
+// provider, and "metrics-agent" (key bk_m1_metricsecret) is enabled but has
+// no "email" entry in its Channels map.
+func testBundle() *config.ConfigBundle {
 	key := "bk_k1_secret123"
-	bundle := &config.ConfigBundle{
+	metricsKey := "bk_m1_metricsecret"
+	return &config.ConfigBundle{
 		SMTP: map[string]*config.SMTPClientConfig{"sendgrid": {Name: "sendgrid"}},
 		Services: map[string]*config.ServiceConfig{
 			"billing-api": {
 				Service: "billing-api", Tenant: "payments", Enabled: true,
 				Keys: []config.KeyEntry{{ID: "k1", SHA256: auth.HashKey(key), State: "active"}},
 				Channels: map[string]*config.ChannelPolicy{
-					"email": {Providers: []string{"sendgrid"}, DefaultProvider: "sendgrid",
+					// "ses" is allowed by policy but not backed by any configured
+					// SMTP provider, so requesting it exercises the 503
+					// "not configured" branch distinct from the 403 policy check.
+					"email": {Providers: []string{"sendgrid", "ses"}, DefaultProvider: "sendgrid",
 						From: &config.FromIdentity{Address: "billing@corp.com", Name: "Billing"},
 						Rate: config.RateConfig{RPM: 60, Daily: 5000}},
 				},
 			},
+			// metrics-agent is a registered, enabled service with no "email"
+			// entry in its Channels map, exercising the "channel not enabled
+			// for this service" 403 branch (distinct from unknown-channel 404).
+			"metrics-agent": {
+				Service: "metrics-agent", Tenant: "obs", Enabled: true,
+				Keys:     []config.KeyEntry{{ID: "m1", SHA256: auth.HashKey(metricsKey), State: "active"}},
+				Channels: map[string]*config.ChannelPolicy{},
+			},
 		},
 	}
+}
+
+// buildNotifyMux wires the NotifyHandler behind auth.Middleware for a given
+// bundle and starter (starter may be nil, e.g. to test the Temporal-unavailable
+// path — a bare untyped nil keeps the WorkflowStarter interface itself nil,
+// unlike passing a typed nil *notifyFakeStarter).
+func buildNotifyMux(t *testing.T, bundle *config.ConfigBundle, starter WorkflowStarter, limiter policy.RateLimiter) (http.Handler, *auth.Registry) {
+	t.Helper()
 	reg := auth.NewRegistry(bundle)
 	h := &NotifyHandler{
 		TemporalClient: starter,
@@ -76,6 +102,11 @@ func testMux(t *testing.T, starter *notifyFakeStarter, limiter policy.RateLimite
 	mux := http.NewServeMux()
 	mux.Handle("POST /v1/notify/{channel}", auth.Middleware(reg)(http.HandlerFunc(h.Handle)))
 	return mux, reg
+}
+
+func testMux(t *testing.T, starter *notifyFakeStarter, limiter policy.RateLimiter) (http.Handler, *auth.Registry) {
+	t.Helper()
+	return buildNotifyMux(t, testBundle(), starter, limiter)
 }
 
 func post(t *testing.T, mux http.Handler, path, key, body string, hdr map[string]string) *httptest.ResponseRecorder {
@@ -202,5 +233,75 @@ func TestNotify_OversizedBody413(t *testing.T) {
 	rec := post(t, mux, "/v1/notify/email", "bk_k1_secret123", body, nil)
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("want 413, got %d", rec.Code)
+	}
+}
+
+func TestNotify_AdminTokenForbidden(t *testing.T) {
+	t.Setenv("ADMIN_TOKEN", "operator-secret")
+	mux, _ := testMux(t, &notifyFakeStarter{}, policy.NewMemoryLimiter(nil))
+	rec := post(t, mux, "/v1/notify/email", "operator-secret", goodBody, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNotify_ChannelNotEnabledForService403(t *testing.T) {
+	mux, _ := testMux(t, &notifyFakeStarter{}, policy.NewMemoryLimiter(nil))
+	rec := post(t, mux, "/v1/notify/email", "bk_m1_metricsecret", goodBody, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not enabled for service") {
+		t.Fatalf("expected body to mention 'not enabled for service', got: %s", rec.Body.String())
+	}
+}
+
+func TestNotify_ProviderAllowedButNotConfigured503(t *testing.T) {
+	mux, _ := testMux(t, &notifyFakeStarter{}, policy.NewMemoryLimiter(nil))
+	rec := post(t, mux, "/v1/notify/email", "bk_k1_secret123",
+		`{"to":"a@b.com","subject":"s","provider":"ses"}`, nil)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not configured") {
+		t.Fatalf("expected body to mention 'not configured', got: %s", rec.Body.String())
+	}
+}
+
+func TestNotify_TemporalError500(t *testing.T) {
+	starter := &notifyFakeStarter{err: errors.New("boom")}
+	mux, _ := testMux(t, starter, policy.NewMemoryLimiter(nil))
+	rec := post(t, mux, "/v1/notify/email", "bk_k1_secret123", goodBody, nil)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNotify_DuplicateStart202(t *testing.T) {
+	starter := &notifyFakeStarter{err: serviceerror.NewWorkflowExecutionAlreadyStarted("already started", "", "")}
+	mux, _ := testMux(t, starter, policy.NewMemoryLimiter(nil))
+	rec := post(t, mux, "/v1/notify/email", "bk_k1_secret123", goodBody, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("want 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Data["duplicate"] != true {
+		t.Fatalf("expected duplicate=true, got: %+v", resp.Data)
+	}
+	if resp.Data["workflow_run_id"] != "" {
+		t.Fatalf("expected empty workflow_run_id for duplicate, got: %+v", resp.Data)
+	}
+}
+
+func TestNotify_NilTemporal503(t *testing.T) {
+	mux, _ := buildNotifyMux(t, testBundle(), nil, policy.NewMemoryLimiter(nil))
+	rec := post(t, mux, "/v1/notify/email", "bk_k1_secret123", goodBody, nil)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

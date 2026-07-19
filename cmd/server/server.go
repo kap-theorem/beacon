@@ -61,11 +61,14 @@ func main() {
 	// ConfigWatcher: poll interval defaults to 300 s, overridden by CONFIG_POLL_INTERVAL (seconds).
 	pollInterval := app.ParsePollInterval(os.Getenv("CONFIG_POLL_INTERVAL"), 300*time.Second)
 	watcher := confpkg.NewConfigWatcher(confpkg.GetConfigService(), pollInterval, func(b *confpkg.ConfigBundle) {
+		// Reload order: provider/auth registries first, legacy last; a legacy
+		// failure (empty SMTP) leaves registries momentarily divergent until
+		// the next successful poll — acceptable until legacy is removed (Task 12).
+		providerRegistry.Reload(b)
+		authRegistry.Reload(b)
 		if reloadErr := registry.Reload(b); reloadErr != nil {
 			logger.Error("registry reload failed", slog.Any("error", reloadErr))
 		}
-		providerRegistry.Reload(b)
-		authRegistry.Reload(b)
 	}, logger)
 	go watcher.Start(ctx)
 

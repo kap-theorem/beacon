@@ -54,6 +54,9 @@ func (h *AdminHandler) HandleConfigRefresh(w http.ResponseWriter, req *http.Requ
 	}
 
 	bundle := h.ConfigService.GetConfig()
+	// Reload order: provider/auth registries first, legacy last; a legacy
+	// failure (empty SMTP) leaves registries momentarily divergent until the
+	// next successful poll — acceptable until legacy is removed (Task 12).
 	h.Providers.Reload(bundle)
 	h.AuthRegistry.Reload(bundle)
 	if h.LegacyRegistry != nil {
