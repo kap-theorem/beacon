@@ -24,6 +24,7 @@ type MockSMTPServer struct {
 	mu          sync.Mutex
 	messages    []CapturedMessage
 	connections atomic.Int64
+	active      map[net.Conn]struct{}
 }
 
 // NewMockSMTPServer starts the server on a random localhost port and registers
@@ -34,7 +35,7 @@ func NewMockSMTPServer(t *testing.T) *MockSMTPServer {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	s := &MockSMTPServer{ln: ln}
+	s := &MockSMTPServer{ln: ln, active: make(map[net.Conn]struct{})}
 	go s.serve()
 	t.Cleanup(func() { _ = ln.Close() })
 	return s
@@ -46,6 +47,34 @@ func (s *MockSMTPServer) Port() int { return s.ln.Addr().(*net.TCPAddr).Port }
 
 // Connections returns the number of TCP connections accepted so far.
 func (s *MockSMTPServer) Connections() int { return int(s.connections.Load()) }
+
+// CloseActiveConns forcibly closes every connection currently open on the
+// server side, simulating a server-side drop (idle timeout, restart, network
+// blip) so callers can test client-side recovery from a live connection that
+// suddenly goes bad mid-session.
+//
+// SetLinger(0) forces a hard RST on close instead of a graceful FIN: a plain
+// close would often surface to the client as a clean io.EOF on its next
+// read, which gomail's own Dialer (RetryFailure defaults true) already
+// retries internally for the MAIL FROM step alone — masking whatever the
+// caller's own reconnect logic does. An RST surfaces as ECONNRESET, which
+// gomail's built-in retry does not cover, so this reliably exercises the
+// caller's own recovery path instead of gomail's.
+func (s *MockSMTPServer) CloseActiveConns() {
+	s.mu.Lock()
+	conns := make([]net.Conn, 0, len(s.active))
+	for c := range s.active {
+		conns = append(conns, c)
+	}
+	s.mu.Unlock()
+
+	for _, c := range conns {
+		if tc, ok := c.(*net.TCPConn); ok {
+			_ = tc.SetLinger(0)
+		}
+		_ = c.Close()
+	}
+}
 
 // Messages returns a copy of all captured messages.
 func (s *MockSMTPServer) Messages() []CapturedMessage {
@@ -68,7 +97,16 @@ func (s *MockSMTPServer) serve() {
 }
 
 func (s *MockSMTPServer) handle(conn net.Conn) {
-	defer conn.Close()
+	s.mu.Lock()
+	s.active[conn] = struct{}{}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.active, conn)
+		s.mu.Unlock()
+		_ = conn.Close()
+	}()
+
 	r := bufio.NewReader(conn)
 	w := bufio.NewWriter(conn)
 	write := func(line string) {

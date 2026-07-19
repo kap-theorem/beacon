@@ -35,12 +35,23 @@ func NewEmailSender(cfg *config.SMTPClientConfig) *EmailSender {
 // (worth one re-dial) rather than a protocol-level SMTP rejection, which
 // would fail identically on retry and, worse, can double-deliver a message
 // whose DATA was already accepted.
+//
+// gomail.Send always wraps the underlying failure as *gomail.SendError, which
+// has no Unwrap method, so errors.As/errors.Is would never see through it to
+// the real net.Error/io.EOF/syscall cause. Unwrap that one layer by hand
+// before classifying.
 func transportError(err error) bool {
+	var se *gomail.SendError
+	cause := err
+	if errors.As(err, &se) && se.Cause != nil {
+		cause = se.Cause
+	}
+
 	var nerr net.Error
-	if errors.As(err, &nerr) && nerr.Timeout() {
+	if errors.As(cause, &nerr) && nerr.Timeout() {
 		return true
 	}
-	return errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
+	return errors.Is(cause, io.EOF) || errors.Is(cause, syscall.ECONNRESET) || errors.Is(cause, syscall.EPIPE)
 }
 
 func (e *EmailSender) dialer() *gomail.Dialer {

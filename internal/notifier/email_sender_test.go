@@ -2,6 +2,8 @@ package notifier
 
 import (
 	"context"
+	"errors"
+	"io"
 	"testing"
 	"time"
 
@@ -73,6 +75,61 @@ func TestEmailSender_RedialsAfterConnectionDrop(t *testing.T) {
 	}
 	if got := srv.Connections(); got != 2 {
 		t.Fatalf("mock server accepted %d connections, want 2 (one dial per connection lifetime)", got)
+	}
+}
+
+// TestEmailSender_RecoversFromServerSideDrop leaves a live connection open
+// (first send succeeds), then has the server forcibly drop every active
+// connection out from under the sender — simulating an idle-timeout or
+// restart mid-session. The sender does not find out until it tries to reuse
+// the connection: gomail.Send must fail on the now-dead socket, the
+// unwrapped classifier must recognize that failure as transport-level, and
+// the sender must re-dial once and successfully deliver the second message.
+func TestEmailSender_RecoversFromServerSideDrop(t *testing.T) {
+	srv := testsupport.NewMockSMTPServer(t)
+	sender := NewEmailSender(&config.SMTPClientConfig{
+		Host: srv.Host(), Port: srv.Port(),
+		Username: "u", Password: "p", AuthType: config.AuthPlain,
+		FromAddress: "noreply@corp.com", FromName: "Beacon",
+	})
+	defer sender.Close()
+
+	n := &models.Notification{
+		Email: &models.EmailPayload{To: "a@b.com", Subject: "s1", Body: "b1"},
+	}
+	if err := sender.Send(context.Background(), n); err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+
+	// Server-side drop: the sender still believes its held connection is
+	// live and will attempt to reuse it on the next Send.
+	srv.CloseActiveConns()
+
+	n.Email.Subject = "s2"
+	if err := sender.Send(context.Background(), n); err != nil {
+		t.Fatalf("second send (after server-side drop): %v", err)
+	}
+	if got := len(srv.Messages()); got != 2 {
+		t.Fatalf("mock server captured %d messages, want 2", got)
+	}
+	if got := srv.Connections(); got != 2 {
+		t.Fatalf("mock server accepted %d connections, want 2 (one re-dial after the drop)", got)
+	}
+}
+
+// TestTransportError_UnwrapsSendError pins the unwrap behavior: gomail.Send
+// always wraps the real cause in a *gomail.SendError with no Unwrap method,
+// so transportError must reach through that wrapper by hand rather than rely
+// on errors.As/errors.Is to see past it on their own.
+func TestTransportError_UnwrapsSendError(t *testing.T) {
+	if !transportError(&gomail.SendError{Cause: io.EOF}) {
+		t.Fatal("io.EOF wrapped in SendError should classify as a transport error")
+	}
+	if transportError(&gomail.SendError{Cause: errors.New("550 no such user")}) {
+		t.Fatal("a protocol-level SMTP rejection wrapped in SendError must NOT classify as a transport error")
+	}
+	if !transportError(io.EOF) {
+		t.Fatal("a bare io.EOF (unwrapped) should still classify as a transport error")
 	}
 }
 
